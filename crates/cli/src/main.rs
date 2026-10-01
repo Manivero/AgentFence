@@ -45,6 +45,15 @@ enum Commands {
         #[command(subcommand)]
         command: McpCommands,
     },
+    /// Start network proxy
+    Network {
+        /// Policy file path
+        #[arg(short, long)]
+        policy: String,
+        /// Listen address
+        #[arg(short, long, default_value = "127.0.0.1:8888")]
+        listen: String,
+    },
     /// Execute a shell command through AgentFence
     Exec {
         /// Policy file path
@@ -137,6 +146,9 @@ fn main() {
                 commands::mcp_proxy::execute(&server, &policy);
             }
         },
+        Commands::Network { policy, listen } => {
+            commands::network_proxy::execute(&policy, &listen);
+        }
         Commands::Exec { policy, command } => {
             commands::exec::execute(&policy, &command);
         }

@@ -12,6 +12,7 @@ use crate::model::{evaluate, Policy};
 /// The PDP is the single authorization authority in AgentFence.
 /// It evaluates actions against policy and returns structured decisions.
 /// It never executes actions and never delegates authorization to an LLM.
+#[derive(Clone)]
 pub struct Pdp {
     policy: Policy,
 }

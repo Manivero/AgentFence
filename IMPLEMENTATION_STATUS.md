@@ -2,7 +2,7 @@
 
 ## Current Milestone
 
-**Phase 6: Approval UI** — Complete
+**Phase 7: Network Proxy** — Complete
 
 ## Completed Tasks
 
@@ -59,13 +59,16 @@
 - [x] Pending approval listing (stub)
 
 ### Phase 7 — Network
-- [ ] Controlled HTTP proxy implementation
+- [x] Controlled HTTP proxy implementation
+- [x] Host allowlist enforcement via PDP
+- [x] Request forwarding to target server
+- [x] Deny/Ask response handling
+- [x] CLI integration (agentfence network)
 
 ## Next Tasks
 
-1. Implement network proxy (controlled HTTP proxy)
-2. Hermes integration
-3. Hardening and adversarial tests
+1. Hermes integration
+2. Hardening and adversarial tests
 
 ## Known Limitations
 
@@ -78,7 +81,7 @@
 
 ## Last Verified State
 
-- **Commit:** ba578d5 (Phase 5)
-- **Tests:** 52 passed, 0 failed
+- **Commit:** df7facb (Phase 6)
+- **Tests:** 56 passed, 0 failed
 - **Build:** Success
 - **Date:** 2026-10-01

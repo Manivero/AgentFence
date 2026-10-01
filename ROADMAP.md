@@ -52,12 +52,12 @@
 - [x] CLI approval UI
 - [x] Interactive terminal prompt
 
-## Phase 7 — Network 🚧
+## Phase 7 — Network ✅
 
 - [x] Network proxy structure
-- [ ] Controlled HTTP proxy
-- [ ] Host allowlist enforcement
-- [ ] Audit integration
+- [x] Controlled HTTP proxy
+- [x] Host allowlist enforcement
+- [x] Audit integration
 
 ## Phase 8 — Secret Guard ✅
 

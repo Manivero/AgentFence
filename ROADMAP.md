@@ -34,13 +34,15 @@
 - [x] Authorization
 - [x] Audit integration
 
-## Phase 5 — MCP 🚧
+## Phase 5 — MCP ✅
 
-- [x] MCP proxy structure
-- [ ] Request interception
-- [ ] Tool authorization
-- [ ] Forwarding
-- [ ] Protocol handling
+- [x] MCP proxy with stdio transport
+- [x] JSON-RPC 2.0 message parsing
+- [x] Tool call interception
+- [x] Tool authorization via PDP
+- [x] Request forwarding to MCP server
+- [x] Deny/Ask response handling
+- [x] CLI integration
 
 ## Phase 6 — Approval 🚧
 

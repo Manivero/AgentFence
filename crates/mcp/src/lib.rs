@@ -4,3 +4,4 @@
 //! request normalization, forwarding. Policy evaluation belongs to PDP.
 
 pub mod proxy;
+pub mod types;

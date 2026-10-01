@@ -51,4 +51,17 @@ The proxy evaluates this against the MCP policy and returns ALLOW, DENY, or ASK.
 
 ## Implementation Status
 
-**Not yet implemented.** The MCP proxy structure is defined but the actual proxy implementation is pending.
+**Implemented.** The MCP proxy supports:
+- stdio transport (JSON-RPC 2.0)
+- Tool call interception and evaluation via PDP
+- Request forwarding to MCP server
+- Deny/Ask response handling with structured error messages
+- CLI integration: `agentfence mcp proxy --server <name> --policy <path>`
+
+### Usage
+
+```bash
+agentfence mcp proxy --server github --policy agentfence.yaml
+```
+
+The proxy spawns the MCP server process, intercepts `tools/call` requests, evaluates them against policy, and forwards allowed calls to the server. Denied calls receive a JSON-RPC error response.

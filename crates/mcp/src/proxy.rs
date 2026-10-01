@@ -2,18 +2,43 @@
 //!
 //! Evaluates tool calls before forwarding them to MCP servers.
 //! Never trusts tool metadata blindly.
+//!
+//! Architecture:
+//! Agent -> AgentFence MCP Proxy -> MCP Server
+//!
+//! The proxy intercepts JSON-RPC messages over stdio, evaluates tool calls
+//! against policy, and forwards allowed calls to the MCP server.
+
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, Command, Stdio};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tracing::{debug, error, info, warn};
 
-use agentfence_core::types::{Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId};
+use agentfence_core::types::{
+    Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId,
+};
 use agentfence_policy::pdp::Pdp;
+
+use crate::types::{JsonRpcRequest, JsonRpcResponse, ToolsCallParams};
 
 /// MCP tool call request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolCall {
     pub tool: String,
-    pub arguments: serde_json::Value,
+    pub arguments: Value,
     pub server: Option<String>,
+}
+
+/// MCP proxy configuration.
+#[derive(Debug, Clone)]
+pub struct ProxyConfig {
+    pub server_name: String,
+    pub server_command: String,
+    pub server_args: Vec<String>,
+    pub session_id: SessionId,
+    pub agent_id: AgentId,
 }
 
 /// MCP proxy.
@@ -22,31 +47,30 @@ pub struct McpToolCall {
 /// Never trusts tool metadata blindly.
 pub struct McpProxy {
     pdp: Pdp,
+    config: ProxyConfig,
 }
 
 impl McpProxy {
-    /// Create a new MCP proxy with the given PDP.
-    pub fn new(pdp: Pdp) -> Self {
-        Self { pdp }
+    /// Create a new MCP proxy with the given PDP and configuration.
+    pub fn new(pdp: Pdp, config: ProxyConfig) -> Self {
+        Self { pdp, config }
     }
 
     /// Evaluate a tool call.
     ///
     /// Returns a decision record with full explanation.
-    pub fn evaluate(
-        &self,
-        call: &McpToolCall,
-        session_id: &SessionId,
-        agent_id: &AgentId,
-    ) -> DecisionRecord {
+    pub fn evaluate(&self, call: &McpToolCall) -> DecisionRecord {
         let action = Action {
             id: ActionId::new(),
-            session_id: session_id.clone(),
-            agent_id: agent_id.clone(),
+            session_id: self.config.session_id.clone(),
+            agent_id: self.config.agent_id.clone(),
             task_id: None,
             action_type: ActionType::Mcp,
             tool: call.tool.clone(),
-            target: call.server.clone().unwrap_or_else(|| "unknown".to_string()),
+            target: call
+                .server
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
             args_hash: hash_args(&call.arguments),
             context: Default::default(),
         };
@@ -55,18 +79,171 @@ impl McpProxy {
     }
 
     /// Check if a tool call is allowed.
-    pub fn is_allowed(
-        &self,
-        call: &McpToolCall,
-        session_id: &SessionId,
-        agent_id: &AgentId,
-    ) -> bool {
-        let record = self.evaluate(call, session_id, agent_id);
+    pub fn is_allowed(&self, call: &McpToolCall) -> bool {
+        let record = self.evaluate(call);
         matches!(record.decision, agentfence_core::types::Decision::Allow)
+    }
+
+    /// Run the proxy loop.
+    ///
+    /// Reads JSON-RPC requests from stdin, evaluates tool calls,
+    /// and forwards allowed requests to the MCP server.
+    pub fn run(&self) -> Result<(), std::io::Error> {
+        info!(
+            "Starting MCP proxy for server '{}'",
+            self.config.server_name
+        );
+
+        let mut child = self.spawn_server()?;
+        let mut server_stdin = child.stdin.take().unwrap();
+        let server_stdout = child.stdout.take().unwrap();
+
+        let stdin = std::io::stdin();
+        let mut reader = BufReader::new(stdin.lock());
+        let _server_reader = BufReader::new(server_stdout);
+        let stdout = std::io::stdout();
+
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    info!("Agent disconnected");
+                    break;
+                }
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    let request: JsonRpcRequest = match serde_json::from_str(trimmed) {
+                        Ok(req) => req,
+                        Err(e) => {
+                            warn!("Failed to parse request: {}", e);
+                            let response = JsonRpcResponse::error(
+                                None,
+                                crate::types::JsonRpcError::PARSE_ERROR,
+                                "Parse error",
+                            );
+                            let mut out = stdout.lock();
+                            let _ =
+                                writeln!(out, "{}", serde_json::to_string(&response).unwrap());
+                            let _ = out.flush();
+                            continue;
+                        }
+                    };
+
+                    if request.method == "tools/call" {
+                        let params: ToolsCallParams = match request.params.clone() {
+                            Some(p) => match serde_json::from_value(p) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    warn!("Failed to parse tool call params: {}", e);
+                                    let response = JsonRpcResponse::error(
+                                        request.id,
+                                        crate::types::JsonRpcError::INVALID_PARAMS,
+                                        "Invalid params",
+                                    );
+                                    let mut out = stdout.lock();
+                                    let _ = writeln!(
+                                        out,
+                                        "{}",
+                                        serde_json::to_string(&response).unwrap()
+                                    );
+                                    let _ = out.flush();
+                                    continue;
+                                }
+                            },
+                            None => {
+                                let response = JsonRpcResponse::error(
+                                    request.id,
+                                    crate::types::JsonRpcError::INVALID_PARAMS,
+                                    "Missing params",
+                                );
+                                let mut out = stdout.lock();
+                                let _ = writeln!(
+                                    out,
+                                    "{}",
+                                    serde_json::to_string(&response).unwrap()
+                                );
+                                let _ = out.flush();
+                                continue;
+                            }
+                        };
+
+                        let call = McpToolCall {
+                            tool: params.name,
+                            arguments: params.arguments,
+                            server: Some(self.config.server_name.clone()),
+                        };
+
+                        let record = self.evaluate(&call);
+
+                        match record.decision {
+                            agentfence_core::types::Decision::Allow => {
+                                info!("ALLOWED: {} (rule: {})", call.tool, record.rule_id);
+                                let _ = writeln!(server_stdin, "{}", trimmed);
+                                let _ = server_stdin.flush();
+                            }
+                            agentfence_core::types::Decision::Deny => {
+                                warn!("DENIED: {} (rule: {})", call.tool, record.rule_id);
+                                let response = JsonRpcResponse::error(
+                                    request.id,
+                                    crate::types::JsonRpcError::INVALID_REQUEST,
+                                    &format!("Denied by policy: {}", record.reason),
+                                );
+                                let mut out = stdout.lock();
+                                let _ = writeln!(
+                                    out,
+                                    "{}",
+                                    serde_json::to_string(&response).unwrap()
+                                );
+                                let _ = out.flush();
+                            }
+                            agentfence_core::types::Decision::Ask => {
+                                warn!("ASK: {} (rule: {})", call.tool, record.reason);
+                                let response = JsonRpcResponse::error(
+                                    request.id,
+                                    crate::types::JsonRpcError::INVALID_REQUEST,
+                                    &format!("Requires approval: {}", record.reason),
+                                );
+                                let mut out = stdout.lock();
+                                let _ = writeln!(
+                                    out,
+                                    "{}",
+                                    serde_json::to_string(&response).unwrap()
+                                );
+                                let _ = out.flush();
+                            }
+                        }
+                    } else {
+                        debug!("Forwarding non-tool-call request: {}", request.method);
+                        let _ = writeln!(server_stdin, "{}", trimmed);
+                        let _ = server_stdin.flush();
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to read from stdin: {}", e);
+                    break;
+                }
+            }
+        }
+
+        let _ = child.wait();
+        Ok(())
+    }
+
+    fn spawn_server(&self) -> Result<Child, std::io::Error> {
+        Command::new(&self.config.server_command)
+            .args(&self.config.server_args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
     }
 }
 
-fn hash_args(args: &serde_json::Value) -> String {
+fn hash_args(args: &Value) -> String {
     use sha2::{Digest, Sha256};
     let json = serde_json::to_string(args).unwrap_or_default();
     let mut hasher = Sha256::new();
@@ -98,48 +275,76 @@ mcp:
         Pdp::new(parse_policy(yaml).unwrap())
     }
 
+    fn test_config() -> ProxyConfig {
+        ProxyConfig {
+            server_name: "github".to_string(),
+            server_command: "npx".to_string(),
+            server_args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+            session_id: SessionId::new(),
+            agent_id: AgentId::new("test-agent"),
+        }
+    }
+
     #[test]
     fn test_mcp_allow() {
-        let proxy = McpProxy::new(test_pdp());
+        let proxy = McpProxy::new(test_pdp(), test_config());
         let call = McpToolCall {
             tool: "github.create_issue".to_string(),
             arguments: serde_json::json!({"repo": "example/repo"}),
             server: Some("github".to_string()),
         };
-        let session_id = SessionId::new();
-        let agent_id = AgentId::new("test-agent");
 
-        let record = proxy.evaluate(&call, &session_id, &agent_id);
+        let record = proxy.evaluate(&call);
         assert_eq!(record.decision, Decision::Allow);
     }
 
     #[test]
     fn test_mcp_deny() {
-        let proxy = McpProxy::new(test_pdp());
+        let proxy = McpProxy::new(test_pdp(), test_config());
         let call = McpToolCall {
             tool: "shell.execute".to_string(),
             arguments: serde_json::json!({"command": "rm -rf /"}),
             server: Some("shell".to_string()),
         };
-        let session_id = SessionId::new();
-        let agent_id = AgentId::new("test-agent");
 
-        let record = proxy.evaluate(&call, &session_id, &agent_id);
+        let record = proxy.evaluate(&call);
         assert_eq!(record.decision, Decision::Deny);
     }
 
     #[test]
     fn test_mcp_default_deny() {
-        let proxy = McpProxy::new(test_pdp());
+        let proxy = McpProxy::new(test_pdp(), test_config());
         let call = McpToolCall {
             tool: "unknown.tool".to_string(),
             arguments: serde_json::json!({}),
             server: Some("unknown".to_string()),
         };
-        let session_id = SessionId::new();
-        let agent_id = AgentId::new("test-agent");
 
-        let record = proxy.evaluate(&call, &session_id, &agent_id);
+        let record = proxy.evaluate(&call);
         assert_eq!(record.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn test_is_allowed() {
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let call = McpToolCall {
+            tool: "github.create_issue".to_string(),
+            arguments: serde_json::json!({"repo": "example/repo"}),
+            server: Some("github".to_string()),
+        };
+
+        assert!(proxy.is_allowed(&call));
+    }
+
+    #[test]
+    fn test_is_not_allowed() {
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let call = McpToolCall {
+            tool: "shell.execute".to_string(),
+            arguments: serde_json::json!({"command": "rm -rf /"}),
+            server: Some("shell".to_string()),
+        };
+
+        assert!(!proxy.is_allowed(&call));
     }
 }

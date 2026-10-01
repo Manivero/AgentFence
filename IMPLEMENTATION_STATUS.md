@@ -2,7 +2,7 @@
 
 ## Current Milestone
 
-**Phase 1-2: Foundation + Policy** — Complete
+**Phase 5: MCP Proxy** — Complete
 
 ## Completed Tasks
 
@@ -46,7 +46,12 @@
 ## In-Progress Tasks
 
 ### Phase 5 — MCP
-- [ ] MCP proxy implementation (structure defined)
+- [x] MCP proxy with stdio transport
+- [x] JSON-RPC 2.0 message parsing
+- [x] Tool call interception and evaluation
+- [x] Request forwarding to MCP server
+- [x] Deny/Ask response handling
+- [x] CLI integration (agentfence mcp proxy)
 
 ### Phase 6 — Approval
 - [ ] CLI approval UI
@@ -56,11 +61,10 @@
 
 ## Next Tasks
 
-1. Implement MCP proxy forwarding
-2. Implement approval CLI UI
-3. Implement network proxy
-4. Hermes integration
-5. Hardening and adversarial tests
+1. Implement approval CLI UI
+2. Implement network proxy (controlled HTTP proxy)
+3. Hermes integration
+4. Hardening and adversarial tests
 
 ## Known Limitations
 
@@ -73,7 +77,7 @@
 
 ## Last Verified State
 
-- **Commit:** N/A (initial implementation)
-- **Tests:** 46 passed, 0 failed
+- **Commit:** d7d7d45 (Phase 1-4 + 8)
+- **Tests:** 52 passed, 0 failed
 - **Build:** Success
 - **Date:** 2026-10-01

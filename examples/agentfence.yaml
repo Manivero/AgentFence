@@ -1,0 +1,50 @@
+# AgentFence Policy Configuration
+# This is a default policy that denies all actions.
+# Modify it to fit your needs.
+
+version: 1
+
+defaults:
+  filesystem: deny
+  shell: deny
+  network: deny
+  mcp: deny
+
+# Filesystem policy
+filesystem:
+  read:
+    allow:
+      - "./project/**"
+  write:
+    allow:
+      - "./project/**"
+  deny:
+    - "~/.ssh/**"
+    - "~/.aws/**"
+    - "**/.env"
+    - "**/*.pem"
+
+# Shell policy
+shell:
+  allow:
+    - git
+    - cargo
+    - npm
+    - python
+  deny:
+    - powershell
+    - reg
+    - netsh
+
+# Network policy
+network:
+  allow:
+    - github.com
+    - crates.io
+    - registry.npmjs.org
+
+# MCP policy
+mcp:
+  allow:
+    - github
+    - filesystem

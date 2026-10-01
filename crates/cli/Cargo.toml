@@ -1,0 +1,30 @@
+[package]
+name = "agentfence-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "agentfence"
+path = "src/main.rs"
+
+[dependencies]
+agentfence-core = { path = "../core" }
+agentfence-policy = { path = "../policy" }
+agentfence-enforcement = { path = "../enforcement" }
+agentfence-audit = { path = "../audit" }
+agentfence-approval = { path = "../approval" }
+agentfence-mcp = { path = "../mcp" }
+agentfence-shell = { path = "../shell" }
+agentfence-network = { path = "../network" }
+agentfence-secrets = { path = "../secrets" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+clap = { version = "4", features = ["derive"] }

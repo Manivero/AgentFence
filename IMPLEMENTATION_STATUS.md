@@ -2,7 +2,7 @@
 
 ## Current Milestone
 
-**Phase 9: Hermes Integration** — Complete
+**Phase 10: Hardening** — Complete (MVP)
 
 ## Completed Tasks
 
@@ -67,7 +67,12 @@
 
 ## Next Tasks
 
-1. Hardening and adversarial tests
+MVP complete. Future work:
+- SQLite persistence (replace JSONL)
+- HTTPS support in network proxy
+- Async I/O for MCP proxy
+- Web UI for approvals
+- Container/VM enforcement backends
 
 ## Known Limitations
 
@@ -80,7 +85,9 @@
 
 ## Last Verified State
 
-- **Commit:** 5e76e85 (Phase 7)
+- **Commit:** cfe30bb (Phase 10)
 - **Tests:** 62 passed, 0 failed
 - **Build:** Success
+- **fmt:** Clean
+- **clippy:** Clean (-D warnings)
 - **Date:** 2026-10-01

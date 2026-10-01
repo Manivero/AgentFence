@@ -79,7 +79,10 @@ NO_PROXY=localhost,127.0.0.1"#,
 
         config.push_str("# Shell wrapper (uncomment to enable)\n");
         config.push_str("# terminal:\n");
-        config.push_str(&format!("#   command: \"{}\"\n\n", self.generate_shell_wrapper()));
+        config.push_str(&format!(
+            "#   command: \"{}\"\n\n",
+            self.generate_shell_wrapper()
+        ));
 
         config.push_str("# Network proxy (set in environment)\n");
         config.push_str(&format!("# {}\n", self.generate_network_env()));

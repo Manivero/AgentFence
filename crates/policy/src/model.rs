@@ -155,7 +155,7 @@ fn evaluate_shell(policy: &Policy, action: &Action) -> DecisionRecord {
         if cmd.contains(denied.as_str()) {
             return DecisionRecord::deny(
                 "shell.deny",
-                &format!("Command matches denied executable: {}", denied),
+                format!("Command matches denied executable: {}", denied),
             );
         }
     }
@@ -165,7 +165,7 @@ fn evaluate_shell(policy: &Policy, action: &Action) -> DecisionRecord {
         if cmd.starts_with(allowed.as_str()) {
             return DecisionRecord::allow(
                 "shell.allow",
-                &format!("Command matches allowed executable: {}", allowed),
+                format!("Command matches allowed executable: {}", allowed),
             );
         }
     }
@@ -191,7 +191,7 @@ fn evaluate_mcp(policy: &Policy, action: &Action) -> DecisionRecord {
         if tool.contains(denied.as_str()) {
             return DecisionRecord::deny(
                 "mcp.deny",
-                &format!("Tool matches denied pattern: {}", denied),
+                format!("Tool matches denied pattern: {}", denied),
             );
         }
     }
@@ -201,7 +201,7 @@ fn evaluate_mcp(policy: &Policy, action: &Action) -> DecisionRecord {
         if tool.contains(allowed.as_str()) {
             return DecisionRecord::allow(
                 "mcp.allow",
-                &format!("Tool matches allowed pattern: {}", allowed),
+                format!("Tool matches allowed pattern: {}", allowed),
             );
         }
     }
@@ -226,7 +226,7 @@ fn evaluate_network(policy: &Policy, action: &Action) -> DecisionRecord {
         if host.contains(denied.as_str()) {
             return DecisionRecord::deny(
                 "network.deny",
-                &format!("Host matches denied pattern: {}", denied),
+                format!("Host matches denied pattern: {}", denied),
             );
         }
     }
@@ -236,7 +236,7 @@ fn evaluate_network(policy: &Policy, action: &Action) -> DecisionRecord {
         if host.contains(allowed.as_str()) {
             return DecisionRecord::allow(
                 "network.allow",
-                &format!("Host matches allowed pattern: {}", allowed),
+                format!("Host matches allowed pattern: {}", allowed),
             );
         }
     }
@@ -261,7 +261,7 @@ fn evaluate_filesystem(policy: &Policy, action: &Action) -> DecisionRecord {
         if path_matches(path, denied) {
             return DecisionRecord::deny(
                 "filesystem.deny",
-                &format!("Path matches denied pattern: {}", denied),
+                format!("Path matches denied pattern: {}", denied),
             );
         }
     }
@@ -278,7 +278,7 @@ fn evaluate_filesystem(policy: &Policy, action: &Action) -> DecisionRecord {
             if path_matches(path, allowed) {
                 return DecisionRecord::allow(
                     "filesystem.allow",
-                    &format!("Path matches allowed pattern: {}", allowed),
+                    format!("Path matches allowed pattern: {}", allowed),
                 );
             }
         }

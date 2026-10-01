@@ -16,9 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
-use agentfence_core::types::{
-    Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId,
-};
+use agentfence_core::types::{Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId};
 use agentfence_policy::pdp::Pdp;
 
 use crate::types::{JsonRpcRequest, JsonRpcResponse, ToolsCallParams};
@@ -67,10 +65,7 @@ impl McpProxy {
             task_id: None,
             action_type: ActionType::Mcp,
             tool: call.tool.clone(),
-            target: call
-                .server
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
+            target: call.server.clone().unwrap_or_else(|| "unknown".to_string()),
             args_hash: hash_args(&call.arguments),
             context: Default::default(),
         };
@@ -126,8 +121,7 @@ impl McpProxy {
                                 "Parse error",
                             );
                             let mut out = stdout.lock();
-                            let _ =
-                                writeln!(out, "{}", serde_json::to_string(&response).unwrap());
+                            let _ = writeln!(out, "{}", serde_json::to_string(&response).unwrap());
                             let _ = out.flush();
                             continue;
                         }
@@ -161,11 +155,8 @@ impl McpProxy {
                                     "Missing params",
                                 );
                                 let mut out = stdout.lock();
-                                let _ = writeln!(
-                                    out,
-                                    "{}",
-                                    serde_json::to_string(&response).unwrap()
-                                );
+                                let _ =
+                                    writeln!(out, "{}", serde_json::to_string(&response).unwrap());
                                 let _ = out.flush();
                                 continue;
                             }
@@ -190,14 +181,11 @@ impl McpProxy {
                                 let response = JsonRpcResponse::error(
                                     request.id,
                                     crate::types::JsonRpcError::INVALID_REQUEST,
-                                    &format!("Denied by policy: {}", record.reason),
+                                    format!("Denied by policy: {}", record.reason),
                                 );
                                 let mut out = stdout.lock();
-                                let _ = writeln!(
-                                    out,
-                                    "{}",
-                                    serde_json::to_string(&response).unwrap()
-                                );
+                                let _ =
+                                    writeln!(out, "{}", serde_json::to_string(&response).unwrap());
                                 let _ = out.flush();
                             }
                             agentfence_core::types::Decision::Ask => {
@@ -205,14 +193,11 @@ impl McpProxy {
                                 let response = JsonRpcResponse::error(
                                     request.id,
                                     crate::types::JsonRpcError::INVALID_REQUEST,
-                                    &format!("Requires approval: {}", record.reason),
+                                    format!("Requires approval: {}", record.reason),
                                 );
                                 let mut out = stdout.lock();
-                                let _ = writeln!(
-                                    out,
-                                    "{}",
-                                    serde_json::to_string(&response).unwrap()
-                                );
+                                let _ =
+                                    writeln!(out, "{}", serde_json::to_string(&response).unwrap());
                                 let _ = out.flush();
                             }
                         }
@@ -279,7 +264,10 @@ mcp:
         ProxyConfig {
             server_name: "github".to_string(),
             server_command: "npx".to_string(),
-            server_args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+            server_args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-github".to_string(),
+            ],
             session_id: SessionId::new(),
             agent_id: AgentId::new("test-agent"),
         }

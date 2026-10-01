@@ -13,9 +13,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use agentfence_core::types::{
-    Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId,
-};
+use agentfence_core::types::{Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId};
 use agentfence_policy::pdp::Pdp;
 
 /// Network request.
@@ -88,10 +86,7 @@ impl NetworkProxy {
     /// Listens on the configured address and proxies requests.
     pub fn run(&self) -> std::io::Result<()> {
         let listener = TcpListener::bind(&self.config.listen_addr)?;
-        info!(
-            "Network proxy listening on {}",
-            self.config.listen_addr
-        );
+        info!("Network proxy listening on {}", self.config.listen_addr);
 
         let pdp = self.pdp.clone();
         let config = self.config.clone();

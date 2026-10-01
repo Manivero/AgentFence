@@ -129,8 +129,7 @@ mod tests {
         assert_eq!(request.method, "tools/call");
         assert_eq!(request.id, Some(Value::from(1)));
 
-        let params: ToolsCallParams =
-            serde_json::from_value(request.params.unwrap()).unwrap();
+        let params: ToolsCallParams = serde_json::from_value(request.params.unwrap()).unwrap();
         assert_eq!(params.name, "github.create_issue");
     }
 
@@ -152,7 +151,8 @@ mod tests {
 
     #[test]
     fn test_response_success() {
-        let response = JsonRpcResponse::success(Some(Value::from(1)), serde_json::json!({"ok": true}));
+        let response =
+            JsonRpcResponse::success(Some(Value::from(1)), serde_json::json!({"ok": true}));
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"result\""));
         assert!(!json.contains("\"error\""));

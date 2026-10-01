@@ -23,7 +23,10 @@ pub fn execute(server: &str, policy_path: &str) {
     let config = ProxyConfig {
         server_name: server.to_string(),
         server_command: "npx".to_string(),
-        server_args: vec!["-y".to_string(), format!("@modelcontextprotocol/server-{}", server)],
+        server_args: vec![
+            "-y".to_string(),
+            format!("@modelcontextprotocol/server-{}", server),
+        ],
         session_id: SessionId::new(),
         agent_id: AgentId::new("cli"),
     };

@@ -57,7 +57,14 @@ pub fn execute(action_id: &str, decision: &str) {
                 println!("Decision: {}", r.decision);
                 println!("Scope:    {:?}", r.scope);
                 println!();
-                println!("Approval {}.", if r.decision == Decision::Allow { "granted" } else { "denied" });
+                println!(
+                    "Approval {}.",
+                    if r.decision == Decision::Allow {
+                        "granted"
+                    } else {
+                        "denied"
+                    }
+                );
             }
             Err(e) => {
                 eprintln!("Approval error: {}", e);
@@ -135,7 +142,14 @@ fn interactive_prompt(
             println!("Decision: {}", r.decision);
             println!("Scope:    {:?}", new_scope);
             println!();
-            println!("Approval {}.", if r.decision == Decision::Allow { "granted" } else { "denied" });
+            println!(
+                "Approval {}.",
+                if r.decision == Decision::Allow {
+                    "granted"
+                } else {
+                    "denied"
+                }
+            );
         }
         Err(e) => {
             eprintln!("Approval error: {}", e);

@@ -155,7 +155,10 @@ fn main() {
         Commands::Logs { session, format } => {
             commands::logs::execute(session, &format);
         }
-        Commands::Approve { action_id, decision } => {
+        Commands::Approve {
+            action_id,
+            decision,
+        } => {
             let decision = decision.as_deref().unwrap_or("ask");
             commands::approve::execute(&action_id, decision);
         }

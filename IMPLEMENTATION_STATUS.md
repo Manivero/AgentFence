@@ -2,7 +2,7 @@
 
 ## Current Milestone
 
-**Phase 7: Network Proxy** — Complete
+**Phase 9: Hermes Integration** — Complete
 
 ## Completed Tasks
 
@@ -67,8 +67,7 @@
 
 ## Next Tasks
 
-1. Hermes integration
-2. Hardening and adversarial tests
+1. Hardening and adversarial tests
 
 ## Known Limitations
 
@@ -81,7 +80,7 @@
 
 ## Last Verified State
 
-- **Commit:** df7facb (Phase 6)
-- **Tests:** 56 passed, 0 failed
+- **Commit:** 5e76e85 (Phase 7)
+- **Tests:** 62 passed, 0 failed
 - **Build:** Success
 - **Date:** 2026-10-01

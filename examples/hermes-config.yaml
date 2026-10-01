@@ -1,0 +1,58 @@
+# Hermes Agent Configuration for AgentFence Integration
+#
+# This file shows how to configure Hermes to route MCP, shell, and network
+# through AgentFence policy evaluation.
+#
+# Usage:
+#   1. Copy the relevant sections to ~/.hermes/config.yaml
+#   2. Set HTTP_PROXY and HTTPS_PROXY environment variables
+#   3. Restart Hermes
+
+# MCP Servers (routed through AgentFence proxy)
+mcp_servers:
+  github:
+    command: "agentfence"
+    args: ["mcp", "proxy", "--server", "github", "--policy", "agentfence.yaml"]
+    timeout: 120
+    connect_timeout: 60
+
+  filesystem:
+    command: "agentfence"
+    args: ["mcp", "proxy", "--server", "filesystem", "--policy", "agentfence.yaml"]
+    timeout: 120
+    connect_timeout: 60
+
+# Shell wrapper (uncomment to route shell commands through AgentFence)
+# terminal:
+#   command: "agentfence exec --policy agentfence.yaml --"
+
+# Network proxy (set in environment before starting Hermes)
+# export HTTP_PROXY=http://127.0.0.1:8888
+# export HTTPS_PROXY=http://127.0.0.1:8888
+# export NO_PROXY=localhost,127.0.0.1
+
+# AgentFence CLI commands:
+#
+# Initialize configuration:
+#   agentfence init
+#
+# Check policy:
+#   agentfence policy check agentfence.yaml
+#
+# Test policy:
+#   agentfence policy test agentfence.yaml
+#
+# Execute shell command through AgentFence:
+#   agentfence exec --policy agentfence.yaml -- git status
+#
+# Start MCP proxy:
+#   agentfence mcp proxy --server github --policy agentfence.yaml
+#
+# Start network proxy:
+#   agentfence network --policy agentfence.yaml --listen 127.0.0.1:8888
+#
+# Approve an action:
+#   agentfence approve <action_id>
+#
+# List pending approvals:
+#   agentfence approve list

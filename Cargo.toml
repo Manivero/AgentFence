@@ -9,6 +9,7 @@ members = [
     "crates/shell",
     "crates/network",
     "crates/secrets",
+    "crates/hermes",
     "crates/cli",
 ]
 resolver = "2"

@@ -66,12 +66,12 @@
 - [x] Gateway integration
 - [x] Tests
 
-## Phase 9 — Hermes 📋
+## Phase 9 — Hermes ✅
 
-- [ ] Working Hermes wrapper
-- [ ] Example configuration
-- [ ] Documentation
-- [ ] Integration tests
+- [x] Working Hermes wrapper
+- [x] Example configuration
+- [x] Documentation
+- [x] Integration tests
 
 ## Phase 10 — Hardening 📋
 

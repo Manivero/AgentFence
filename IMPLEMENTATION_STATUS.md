@@ -2,7 +2,7 @@
 
 ## Current Milestone
 
-**Phase 5: MCP Proxy** — Complete
+**Phase 6: Approval UI** — Complete
 
 ## Completed Tasks
 
@@ -54,17 +54,18 @@
 - [x] CLI integration (agentfence mcp proxy)
 
 ### Phase 6 — Approval
-- [ ] CLI approval UI
+- [x] CLI approval UI with interactive terminal prompt
+- [x] Direct approve/deny via CLI flags
+- [x] Pending approval listing (stub)
 
 ### Phase 7 — Network
 - [ ] Controlled HTTP proxy implementation
 
 ## Next Tasks
 
-1. Implement approval CLI UI
-2. Implement network proxy (controlled HTTP proxy)
-3. Hermes integration
-4. Hardening and adversarial tests
+1. Implement network proxy (controlled HTTP proxy)
+2. Hermes integration
+3. Hardening and adversarial tests
 
 ## Known Limitations
 
@@ -77,7 +78,7 @@
 
 ## Last Verified State
 
-- **Commit:** d7d7d45 (Phase 1-4 + 8)
+- **Commit:** ba578d5 (Phase 5)
 - **Tests:** 52 passed, 0 failed
 - **Build:** Success
 - **Date:** 2026-10-01

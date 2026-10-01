@@ -44,13 +44,13 @@
 - [x] Deny/Ask response handling
 - [x] CLI integration
 
-## Phase 6 — Approval 🚧
+## Phase 6 — Approval ✅
 
 - [x] Approval records
 - [x] Scopes
 - [x] Expiry
-- [ ] CLI approval UI
-- [ ] Interactive terminal prompt
+- [x] CLI approval UI
+- [x] Interactive terminal prompt
 
 ## Phase 7 — Network 🚧
 

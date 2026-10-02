@@ -17,8 +17,8 @@ Thumbs.db
 # Runtime data
 *.db
 *.jsonl
-audit/
-logs/
+/audit/
+/logs/
 
 # Environment
 .env

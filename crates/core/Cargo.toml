@@ -13,3 +13,4 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+rusqlite = { version = "0.31", features = ["bundled"] }

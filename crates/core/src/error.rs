@@ -33,9 +33,8 @@ pub enum AgentFenceError {
 
     #[error("YAML error: {0}")]
     Yaml(#[from] serde_yaml::Error),
-
-    #[error("database error: {0}")]
-    Database(String),
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
 
     #[error("not found: {0}")]
     NotFound(String),

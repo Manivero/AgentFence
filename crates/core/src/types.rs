@@ -13,6 +13,10 @@ impl ActionId {
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
     }
+
+    pub fn new_from_string(s: String) -> Self {
+        Self(s)
+    }
 }
 
 impl Default for ActionId {
@@ -33,6 +37,10 @@ pub struct SessionId(pub String);
 impl SessionId {
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
+    }
+
+    pub fn new_from_string(s: String) -> Self {
+        Self(s)
     }
 }
 
@@ -55,6 +63,10 @@ impl AgentId {
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }
+
+    pub fn new_from_string(s: String) -> Self {
+        Self(s)
+    }
 }
 
 impl fmt::Display for AgentId {
@@ -69,6 +81,10 @@ pub struct TaskId(pub String);
 impl TaskId {
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
+    }
+
+    pub fn new_from_string(s: String) -> Self {
+        Self(s)
     }
 }
 

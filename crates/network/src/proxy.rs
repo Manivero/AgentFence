@@ -218,6 +218,61 @@ fn parse_url(url: &str, headers: &str) -> (String, Option<u16>, String) {
     (url.to_string(), None, "/".to_string())
 }
 
+/// Normalize a hostname for policy comparison.
+///
+/// Normalization steps:
+/// 1. Convert to lowercase
+/// 2. Remove trailing dot (FQDN form)
+/// 3. Strip default ports (80 for http, 443 for https)
+/// 4. Validate hostname characters
+///
+/// Returns `None` if the hostname is invalid.
+pub fn normalize_host(host: &str) -> Option<String> {
+    // Split host and port first
+    let (host_part, port_part) = split_host_port(host).unwrap_or((host.to_string(), None));
+
+    let mut h = host_part.to_lowercase();
+
+    // Remove trailing dot
+    if h.ends_with('.') {
+        h.pop();
+    }
+
+    // Validate: must be 1-253 characters
+    if h.is_empty() || h.len() > 253 {
+        return None;
+    }
+
+    // Validate: only alphanumeric, hyphens, dots
+    if !h
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    {
+        return None;
+    }
+
+    // Validate: no consecutive dots
+    if h.contains("..") {
+        return None;
+    }
+
+    // Strip default ports from the host part
+    if let Some(stripped) = h.strip_suffix(":80") {
+        h = stripped.to_string();
+    } else if let Some(stripped) = h.strip_suffix(":443") {
+        h = stripped.to_string();
+    }
+
+    // Reattach non-default port
+    if let Some(port) = port_part {
+        if port != 80 && port != 443 {
+            h = format!("{}:{}", h, port);
+        }
+    }
+
+    Some(h)
+}
+
 /// Split host:port string.
 fn split_host_port(s: &str) -> Option<(String, Option<u16>)> {
     if let Some(idx) = s.rfind(':') {
@@ -383,6 +438,64 @@ network:
         assert_eq!(
             extract_path("http://example.com/api/v1"),
             "/api/v1".to_string()
+        );
+    }
+
+    #[test]
+    fn test_normalize_host_lowercase() {
+        assert_eq!(normalize_host("GitHub.COM"), Some("github.com".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_host_trailing_dot() {
+        assert_eq!(
+            normalize_host("github.com."),
+            Some("github.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_host_default_port() {
+        assert_eq!(
+            normalize_host("github.com:443"),
+            Some("github.com".to_string())
+        );
+        assert_eq!(
+            normalize_host("github.com:80"),
+            Some("github.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_host_invalid_empty() {
+        assert_eq!(normalize_host(""), None);
+    }
+
+    #[test]
+    fn test_normalize_host_invalid_chars() {
+        assert_eq!(normalize_host("evil com"), None);
+        assert_eq!(normalize_host("evil@com"), None);
+    }
+
+    #[test]
+    fn test_normalize_host_invalid_consecutive_dots() {
+        assert_eq!(normalize_host("evil..com"), None);
+    }
+
+    #[test]
+    fn test_normalize_host_non_default_port() {
+        assert_eq!(
+            normalize_host("github.com:8080"),
+            Some("github.com:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_host_bypass_attempt() {
+        // "github.com.evil.com" should NOT normalize to "github.com"
+        assert_eq!(
+            normalize_host("github.com.evil.com"),
+            Some("github.com.evil.com".to_string())
         );
     }
 }

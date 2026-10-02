@@ -2,7 +2,7 @@
 
 ## Current Milestone
 
-**Phase 10: Hardening** — Complete (MVP)
+**Post-MVP v0.2: Security Hardening** — In Progress
 
 ## Completed Tasks
 
@@ -67,12 +67,11 @@
 
 ## Next Tasks
 
-MVP complete. Future work:
-- SQLite persistence (replace JSONL)
-- HTTPS support in network proxy
-- Async I/O for MCP proxy
-- Web UI for approvals
-- Container/VM enforcement backends
+1. SQLite persistence (replace JSONL)
+2. HTTPS support in network proxy
+3. Async I/O for MCP proxy
+4. Web UI for approvals
+5. Container/VM enforcement backends
 
 ## Known Limitations
 
@@ -85,9 +84,9 @@ MVP complete. Future work:
 
 ## Last Verified State
 
-- **Commit:** cfe30bb (Phase 10)
-- **Tests:** 62 passed, 0 failed
+- **Commit:** (uncommitted post-MVP changes)
+- **Tests:** 85 passed, 0 failed
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)
-- **Date:** 2026-10-01
+- **Date:** 2026-10-02

@@ -5,6 +5,8 @@ use agentfence_mcp::proxy::{McpProxy, ProxyConfig};
 use agentfence_policy::{parser::load_policy, pdp::Pdp};
 use tracing::info;
 
+use super::db;
+
 pub fn execute(server: &str, policy_path: &str) {
     info!(
         "Starting MCP proxy for server '{}' with policy '{}'",
@@ -20,6 +22,14 @@ pub fn execute(server: &str, policy_path: &str) {
     };
 
     let pdp = Pdp::new(policy);
+    let session_id = SessionId::new();
+    let agent_id = AgentId::new("cli");
+
+    // Initialize audit store
+    let db_path = db::get_db_path();
+    let _ = db::ensure_db_dir(&db_path);
+    let _audit_store = agentfence_audit::sqlite_store::SqliteStore::new(&db_path).ok();
+
     let config = ProxyConfig {
         server_name: server.to_string(),
         server_command: "npx".to_string(),
@@ -27,8 +37,8 @@ pub fn execute(server: &str, policy_path: &str) {
             "-y".to_string(),
             format!("@modelcontextprotocol/server-{}", server),
         ],
-        session_id: SessionId::new(),
-        agent_id: AgentId::new("cli"),
+        session_id: session_id.clone(),
+        agent_id: agent_id.clone(),
     };
 
     let proxy = McpProxy::new(pdp, config);

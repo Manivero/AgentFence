@@ -2,6 +2,7 @@
 
 pub mod approve;
 pub mod audit_verify;
+pub mod db;
 pub mod exec;
 pub mod init;
 pub mod logs;

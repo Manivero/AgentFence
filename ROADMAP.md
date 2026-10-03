@@ -109,9 +109,9 @@
 - [x] Code deduplication (run_inner)
 - [x] Additional tests for edge cases
 
-### Priority 4 — Network Proxy Hardening (Planned)
+### Priority 4 — Network Proxy Hardening (In Progress)
 
-- [ ] HTTPS CONNECT tunnel support
+- [x] HTTPS CONNECT tunnel support
 - [ ] Request/response body inspection
 - [ ] Rate limiting
 - [ ] Connection pooling

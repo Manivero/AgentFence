@@ -112,7 +112,7 @@
 ### Priority 4 — Network Proxy Hardening (In Progress)
 
 - [x] HTTPS CONNECT tunnel support
-- [ ] Request/response body inspection
+- [x] Request body inspection and hashing
 - [ ] Rate limiting
 - [ ] Connection pooling
 

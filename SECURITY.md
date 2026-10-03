@@ -108,10 +108,12 @@ Approvals are narrow by default. Never promote a one-shot approval into a perman
 ## Known Limitations
 
 - Cooperative mode only — no OS-level enforcement
-- No filesystem enforcement in MVP
-- No process enforcement in MVP
-- No container/VM isolation in MVP
+- No filesystem enforcement
+- No process enforcement
+- No container/VM isolation
 - Shell command parsing is simplified (not a full shell parser)
-- Network proxy is not yet implemented
-- MCP proxy is not yet implemented
-- Approval UI is not yet implemented
+- Network proxy supports HTTP and HTTPS CONNECT tunneling only
+- MCP proxy supports stdio transport only
+- Approval UI is terminal-only
+- No connection pooling in network proxy
+- Rate limiting is per-connection, not global

@@ -110,30 +110,32 @@
 
 **Description:** An agent exfiltrates data through network requests.
 
-**MVP Mitigation:** Network policy evaluation (when implemented).
+**Mitigation:** Network policy evaluation, HTTPS CONNECT tunnel inspection, rate limiting, request body hashing.
 
-**Residual Risk:** High — network proxy not yet implemented.
+**Residual Risk:** Medium — HTTPS tunnel content is encrypted and cannot be inspected.
 
-## Threats MVP Can Mitigate
+## Threats AgentFence Can Mitigate
 
 - Unauthorized shell commands
 - Unauthorized MCP tool calls
-- Unauthorized network requests (when implemented)
+- Unauthorized network requests
 - Secret disclosure in controlled paths
 - Approval replay
 - Expired approval reuse
 - Log tampering (detection)
+- Network rate limiting
 
-## Threats MVP Can Only Observe
+## Threats AgentFence Can Only Observe
 
 - Direct child process execution
 - Uncontrolled network activity
 - Filesystem access outside controlled paths
 
-## Threats MVP Cannot Mitigate
+## Threats AgentFence Cannot Mitigate
 
 - OS-level attacks
 - Kernel exploits
 - Physical access attacks
 - Compromised AgentFence process
 - Bypass through unmanaged processes
+- HTTPS tunnel content inspection (encrypted)

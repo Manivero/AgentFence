@@ -118,8 +118,8 @@
 
 ### Priority 5 — Documentation & CI/CD (In Progress)
 
-- [ ] SECURITY.md update
-- [ ] THREAT_MODEL.md update
+- [x] SECURITY.md update
+- [x] THREAT_MODEL.md update
 - [x] GitHub Actions CI pipeline
 - [x] Security audit workflow
 

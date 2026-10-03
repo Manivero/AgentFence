@@ -105,7 +105,7 @@
 - [x] Forward server responses to agent via background thread
 - [x] Server health check (`is_server_running`)
 - [x] Improved spawn error logging
-- [ ] Graceful shutdown on SIGINT/SIGTERM
+- [x] Graceful shutdown on SIGINT/SIGTERM
 - [ ] Request timeout handling
 - [ ] Backpressure for slow agents
 

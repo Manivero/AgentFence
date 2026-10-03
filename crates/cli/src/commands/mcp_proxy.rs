@@ -55,7 +55,7 @@ pub fn execute(server: &str, policy_path: &str) {
     println!("Security Boundary: LIMITED");
     println!();
 
-    if let Err(e) = proxy.run() {
+    if let Err(e) = proxy.run_with_shutdown() {
         eprintln!("MCP proxy error: {}", e);
         std::process::exit(1);
     }

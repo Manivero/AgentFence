@@ -28,12 +28,15 @@ pub fn execute(policy_path: &str, listen_addr: &str) {
     // Initialize audit store
     let db_path = db::get_db_path();
     let _ = db::ensure_db_dir(&db_path);
-    let _audit_store = agentfence_audit::sqlite_store::SqliteStore::new(&db_path).ok();
+    let audit_store = agentfence_audit::sqlite_store::SqliteStore::new(&db_path)
+        .ok()
+        .map(|s| std::sync::Arc::new(std::sync::Mutex::new(s)));
 
     let config = NetworkProxyConfig {
         listen_addr: listen_addr.to_string(),
         session_id: session_id.clone(),
         agent_id: agent_id.clone(),
+        audit_store,
     };
 
     let proxy = NetworkProxy::new(pdp, config);

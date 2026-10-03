@@ -28,7 +28,9 @@ pub fn execute(server: &str, policy_path: &str) {
     // Initialize audit store
     let db_path = db::get_db_path();
     let _ = db::ensure_db_dir(&db_path);
-    let _audit_store = agentfence_audit::sqlite_store::SqliteStore::new(&db_path).ok();
+    let audit_store = agentfence_audit::sqlite_store::SqliteStore::new(&db_path)
+        .ok()
+        .map(|s| std::sync::Arc::new(std::sync::Mutex::new(s)));
 
     let config = ProxyConfig {
         server_name: server.to_string(),
@@ -39,6 +41,7 @@ pub fn execute(server: &str, policy_path: &str) {
         ],
         session_id: session_id.clone(),
         agent_id: agent_id.clone(),
+        audit_store,
     };
 
     let proxy = McpProxy::new(pdp, config);

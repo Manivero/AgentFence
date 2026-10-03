@@ -24,6 +24,12 @@ pub struct SqliteStore {
     conn: Connection,
 }
 
+impl std::fmt::Debug for SqliteStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteStore").finish_non_exhaustive()
+    }
+}
+
 impl SqliteStore {
     /// Create a new SQLite store at the given path.
     pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self> {

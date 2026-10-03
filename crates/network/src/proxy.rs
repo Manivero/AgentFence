@@ -31,6 +31,8 @@ pub struct NetworkProxyConfig {
     pub listen_addr: String,
     pub session_id: SessionId,
     pub agent_id: AgentId,
+    pub audit_store:
+        Option<std::sync::Arc<std::sync::Mutex<agentfence_audit::sqlite_store::SqliteStore>>>,
 }
 
 /// Network proxy.
@@ -118,6 +120,7 @@ fn handle_connection(
     pdp: &Pdp,
     config: &NetworkProxyConfig,
 ) -> std::io::Result<()> {
+    let audit_store = config.audit_store.clone();
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -158,6 +161,30 @@ fn handle_connection(
         };
         pdp.evaluate(&action)
     };
+
+    // Record audit event
+    if let Some(ref store) = audit_store {
+        let event = agentfence_audit::event::AuditEvent::new(
+            config.session_id.clone(),
+            config.agent_id.clone(),
+            None,
+            ActionId::new(),
+            None,
+            "network",
+            "network",
+            format!("{}://{}:{}{}", "http", host, port.unwrap_or(80), path),
+            "",
+            record.decision,
+            record.risk_level,
+            &record.rule_id,
+            &record.policy_version,
+            "",
+            "",
+        );
+        if let Ok(store) = store.lock() {
+            let _ = store.record_event(&event);
+        }
+    }
 
     match record.decision {
         agentfence_core::types::Decision::Allow => {
@@ -363,6 +390,7 @@ network:
             listen_addr: "127.0.0.1:0".to_string(),
             session_id: SessionId::new(),
             agent_id: AgentId::new("test-agent"),
+            audit_store: None,
         }
     }
 

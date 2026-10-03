@@ -37,6 +37,8 @@ pub struct ProxyConfig {
     pub server_args: Vec<String>,
     pub session_id: SessionId,
     pub agent_id: AgentId,
+    pub audit_store:
+        Option<std::sync::Arc<std::sync::Mutex<agentfence_audit::sqlite_store::SqliteStore>>>,
 }
 
 /// MCP proxy.
@@ -170,6 +172,30 @@ impl McpProxy {
 
                         let record = self.evaluate(&call);
 
+                        // Record audit event
+                        if let Some(ref store) = self.config.audit_store {
+                            let event = agentfence_audit::event::AuditEvent::new(
+                                self.config.session_id.clone(),
+                                self.config.agent_id.clone(),
+                                None,
+                                ActionId::new(),
+                                None,
+                                "mcp",
+                                &call.tool,
+                                format!("{:?}", call.arguments),
+                                hash_args(&call.arguments),
+                                record.decision,
+                                record.risk_level,
+                                &record.rule_id,
+                                &record.policy_version,
+                                "",
+                                "",
+                            );
+                            if let Ok(store) = store.lock() {
+                                let _ = store.record_event(&event);
+                            }
+                        }
+
                         match record.decision {
                             agentfence_core::types::Decision::Allow => {
                                 info!("ALLOWED: {} (rule: {})", call.tool, record.rule_id);
@@ -270,6 +296,7 @@ mcp:
             ],
             session_id: SessionId::new(),
             agent_id: AgentId::new("test-agent"),
+            audit_store: None,
         }
     }
 

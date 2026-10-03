@@ -2,7 +2,7 @@
 
 ## Current Milestone
 
-**Post-MVP v0.2: Security Hardening** — In Progress
+**Post-MVP v0.2: Security Hardening + SQLite Persistence** — In Progress
 
 ## Completed Tasks
 
@@ -84,8 +84,8 @@
 
 ## Last Verified State
 
-- **Commit:** (uncommitted post-MVP changes)
-- **Tests:** 85 passed, 0 failed
+- **Commit:** 68f0ec6 (SQLite persistence + hash chain fix)
+- **Tests:** 103 passed, 0 failed
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)

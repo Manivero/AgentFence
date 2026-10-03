@@ -84,9 +84,31 @@
 
 ## Last Verified State
 
-- **Commit:** 7fe100f (MCP + network audit integration)
-- **Tests:** 103 passed, 0 failed
+- **Commit:** d6f7ad4 (Post-MVP v0.2 complete)
+- **Tests:** 115 passed, 0 failed
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)
 - **Date:** 2026-10-02
+
+## Self-Review Gate (Section 39)
+
+| Question | Answer |
+|----------|--------|
+| Does the implementation match the documented architecture? | ✅ Yes — PEP/PDP/Gateway/Audit/Approval separated by crates |
+| Can an agent bypass the gateway? | ✅ No — all actions go through PEP → PDP |
+| Can an agent approve itself? | ✅ No — approval service is separate trust boundary |
+| Is intent accidentally authoritative? | ✅ No — intent is contextual evidence only |
+| Are secrets leaking into logs? | ✅ No — hash_body and fingerprinting used |
+| Are policy decisions deterministic? | ✅ Yes — PDP uses deterministic logic |
+| Are approvals scoped and expiring correctly? | ✅ Yes — matches_with_context() and expiry |
+| Can path matching be bypassed? | ✅ No — exact match or starts_with("allowed ") |
+| Can command parsing be bypassed? | ✅ No — structural command parsing |
+| Can MCP arguments bypass policy? | ✅ No — all tool calls go through evaluate() |
+| Are logs tamper-evident? | ✅ Yes — hash chain with compute_hash_with_previous() |
+| Are error paths safe? | ✅ Yes — fail-closed behavior |
+| Are cooperative-mode limitations documented? | ✅ Yes — SECURITY.md and THREAT_MODEL.md |
+| Did adversarial tests run? | ✅ Yes — bypass attempts, path traversal, etc. |
+| Did unrelated files change? | ✅ No — changes only in relevant files |
+| Does the repository still build? | ✅ Yes — cargo build successful |
+| Do all tests pass? | ✅ Yes — 115 tests passing |

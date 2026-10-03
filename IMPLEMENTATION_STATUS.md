@@ -84,7 +84,7 @@
 
 ## Last Verified State
 
-- **Commit:** 68f0ec6 (SQLite persistence + hash chain fix)
+- **Commit:** b090fe9 (CLI audit integration)
 - **Tests:** 103 passed, 0 failed
 - **Build:** Success
 - **fmt:** Clean

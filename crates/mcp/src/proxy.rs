@@ -85,6 +85,7 @@ impl McpProxy {
     ///
     /// Reads JSON-RPC requests from stdin, evaluates tool calls,
     /// and forwards allowed requests to the MCP server.
+    /// Server responses are forwarded back to the agent via a background thread.
     pub fn run(&self) -> Result<(), std::io::Error> {
         info!(
             "Starting MCP proxy for server '{}'",
@@ -95,9 +96,27 @@ impl McpProxy {
         let mut server_stdin = child.stdin.take().unwrap();
         let server_stdout = child.stdout.take().unwrap();
 
+        // Forward server responses back to the agent in a background thread
+        let server_reader = BufReader::new(server_stdout);
+        let stdout_handle = std::thread::spawn(move || {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            for line in server_reader.lines() {
+                match line {
+                    Ok(l) => {
+                        let _ = writeln!(out, "{}", l);
+                        let _ = out.flush();
+                    }
+                    Err(e) => {
+                        error!("Failed to read server response: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
         let stdin = std::io::stdin();
         let mut reader = BufReader::new(stdin.lock());
-        let _server_reader = BufReader::new(server_stdout);
         let stdout = std::io::stdout();
 
         loop {
@@ -240,7 +259,9 @@ impl McpProxy {
             }
         }
 
+        drop(server_stdin);
         let _ = child.wait();
+        let _ = stdout_handle.join();
         Ok(())
     }
 

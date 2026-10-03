@@ -37,6 +37,7 @@ pub fn execute(policy_path: &str, listen_addr: &str) {
         session_id: session_id.clone(),
         agent_id: agent_id.clone(),
         audit_store,
+        rate_limit: 100,
     };
 
     let proxy = NetworkProxy::new(pdp, config);

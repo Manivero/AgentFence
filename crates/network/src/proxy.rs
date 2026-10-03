@@ -33,6 +33,8 @@ pub struct NetworkProxyConfig {
     pub agent_id: AgentId,
     pub audit_store:
         Option<std::sync::Arc<std::sync::Mutex<agentfence_audit::sqlite_store::SqliteStore>>>,
+    /// Maximum requests per second per client (0 = unlimited)
+    pub rate_limit: u32,
 }
 
 /// Network proxy.
@@ -114,6 +116,50 @@ impl NetworkProxy {
     }
 }
 
+/// Rate limiter state (token bucket algorithm).
+#[derive(Debug)]
+struct RateLimiter {
+    /// Maximum requests per second
+    max_rps: u32,
+    /// Current token count
+    tokens: u32,
+    /// Last refill time
+    last_refill: std::time::Instant,
+}
+
+impl RateLimiter {
+    fn new(max_rps: u32) -> Self {
+        Self {
+            max_rps,
+            tokens: max_rps,
+            last_refill: std::time::Instant::now(),
+        }
+    }
+
+    /// Try to consume a token. Returns true if allowed, false if rate limited.
+    fn try_consume(&mut self) -> bool {
+        if self.max_rps == 0 {
+            return true; // Unlimited
+        }
+
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_refill);
+        let tokens_to_add = (elapsed.as_secs_f64() * self.max_rps as f64) as u32;
+
+        if tokens_to_add > 0 {
+            self.tokens = (self.tokens + tokens_to_add).min(self.max_rps);
+            self.last_refill = now;
+        }
+
+        if self.tokens > 0 {
+            self.tokens -= 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Handle a single proxy connection.
 fn handle_connection(
     mut stream: TcpStream,
@@ -121,6 +167,7 @@ fn handle_connection(
     config: &NetworkProxyConfig,
 ) -> std::io::Result<()> {
     let audit_store = config.audit_store.clone();
+    let rate_limit = config.rate_limit;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -191,6 +238,22 @@ fn handle_connection(
         );
         if let Ok(store) = store.lock() {
             let _ = store.record_event(&event);
+        }
+    }
+
+    // Rate limiting check
+    if rate_limit > 0 {
+        let mut limiter = RateLimiter::new(rate_limit);
+        if !limiter.try_consume() {
+            warn!("RATE LIMITED: {} {}", method, url);
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nRate limit exceeded: {} requests per second",
+                format!("Rate limit exceeded: {} requests per second", rate_limit).len(),
+                rate_limit
+            );
+            stream.write_all(response.as_bytes())?;
+            stream.flush()?;
+            return Ok(());
         }
     }
 
@@ -578,6 +641,7 @@ network:
             session_id: SessionId::new(),
             agent_id: AgentId::new("test-agent"),
             audit_store: None,
+            rate_limit: 0,
         }
     }
 
@@ -761,5 +825,32 @@ network:
     fn test_hash_body_deterministic() {
         let body = b"test data";
         assert_eq!(hash_body(body), hash_body(body));
+    }
+
+    #[test]
+    fn test_rate_limiter_unlimited() {
+        let mut limiter = RateLimiter::new(0);
+        for _ in 0..100 {
+            assert!(limiter.try_consume());
+        }
+    }
+
+    #[test]
+    fn test_rate_limiter_allows_up_to_limit() {
+        let mut limiter = RateLimiter::new(5);
+        for _ in 0..5 {
+            assert!(limiter.try_consume());
+        }
+        assert!(!limiter.try_consume());
+    }
+
+    #[test]
+    fn test_rate_limiter_refills_over_time() {
+        let mut limiter = RateLimiter::new(2);
+        assert!(limiter.try_consume());
+        assert!(limiter.try_consume());
+        assert!(!limiter.try_consume());
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        assert!(limiter.try_consume());
     }
 }

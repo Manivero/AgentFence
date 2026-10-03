@@ -87,182 +87,7 @@ impl McpProxy {
     /// and forwards allowed requests to the MCP server.
     /// Server responses are forwarded back to the agent via a background thread.
     pub fn run(&self) -> Result<(), std::io::Error> {
-        info!(
-            "Starting MCP proxy for server '{}'",
-            self.config.server_name
-        );
-
-        let mut child = self.spawn_server()?;
-        let mut server_stdin = child.stdin.take().unwrap();
-        let server_stdout = child.stdout.take().unwrap();
-
-        // Forward server responses back to the agent in a background thread
-        let server_reader = BufReader::new(server_stdout);
-        let stdout_handle = std::thread::spawn(move || {
-            let stdout = std::io::stdout();
-            let mut out = stdout.lock();
-            for line in server_reader.lines() {
-                match line {
-                    Ok(l) => {
-                        let _ = writeln!(out, "{}", l);
-                        let _ = out.flush();
-                    }
-                    Err(e) => {
-                        error!("Failed to read server response: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
-
-        let stdin = std::io::stdin();
-        let mut reader = BufReader::new(stdin.lock());
-        let stdout = std::io::stdout();
-
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => {
-                    info!("Agent disconnected");
-                    break;
-                }
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-
-                    let request: JsonRpcRequest = match serde_json::from_str(trimmed) {
-                        Ok(req) => req,
-                        Err(e) => {
-                            warn!("Failed to parse request: {}", e);
-                            let response = JsonRpcResponse::error(
-                                None,
-                                crate::types::JsonRpcError::PARSE_ERROR,
-                                "Parse error",
-                            );
-                            let mut out = stdout.lock();
-                            let _ = writeln!(out, "{}", serde_json::to_string(&response).unwrap());
-                            let _ = out.flush();
-                            continue;
-                        }
-                    };
-
-                    if request.method == "tools/call" {
-                        let params: ToolsCallParams = match request.params.clone() {
-                            Some(p) => match serde_json::from_value(p) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    warn!("Failed to parse tool call params: {}", e);
-                                    let response = JsonRpcResponse::error(
-                                        request.id,
-                                        crate::types::JsonRpcError::INVALID_PARAMS,
-                                        "Invalid params",
-                                    );
-                                    let mut out = stdout.lock();
-                                    let _ = writeln!(
-                                        out,
-                                        "{}",
-                                        serde_json::to_string(&response).unwrap()
-                                    );
-                                    let _ = out.flush();
-                                    continue;
-                                }
-                            },
-                            None => {
-                                let response = JsonRpcResponse::error(
-                                    request.id,
-                                    crate::types::JsonRpcError::INVALID_PARAMS,
-                                    "Missing params",
-                                );
-                                let mut out = stdout.lock();
-                                let _ =
-                                    writeln!(out, "{}", serde_json::to_string(&response).unwrap());
-                                let _ = out.flush();
-                                continue;
-                            }
-                        };
-
-                        let call = McpToolCall {
-                            tool: params.name,
-                            arguments: params.arguments,
-                            server: Some(self.config.server_name.clone()),
-                        };
-
-                        let record = self.evaluate(&call);
-
-                        // Record audit event
-                        if let Some(ref store) = self.config.audit_store {
-                            let event = agentfence_audit::event::AuditEvent::new(
-                                self.config.session_id.clone(),
-                                self.config.agent_id.clone(),
-                                None,
-                                ActionId::new(),
-                                None,
-                                "mcp",
-                                &call.tool,
-                                format!("{:?}", call.arguments),
-                                hash_args(&call.arguments),
-                                record.decision,
-                                record.risk_level,
-                                &record.rule_id,
-                                &record.policy_version,
-                                "",
-                                "",
-                            );
-                            if let Ok(store) = store.lock() {
-                                let _ = store.record_event(&event);
-                            }
-                        }
-
-                        match record.decision {
-                            agentfence_core::types::Decision::Allow => {
-                                info!("ALLOWED: {} (rule: {})", call.tool, record.rule_id);
-                                let _ = writeln!(server_stdin, "{}", trimmed);
-                                let _ = server_stdin.flush();
-                            }
-                            agentfence_core::types::Decision::Deny => {
-                                warn!("DENIED: {} (rule: {})", call.tool, record.rule_id);
-                                let response = JsonRpcResponse::error(
-                                    request.id,
-                                    crate::types::JsonRpcError::INVALID_REQUEST,
-                                    format!("Denied by policy: {}", record.reason),
-                                );
-                                let mut out = stdout.lock();
-                                let _ =
-                                    writeln!(out, "{}", serde_json::to_string(&response).unwrap());
-                                let _ = out.flush();
-                            }
-                            agentfence_core::types::Decision::Ask => {
-                                warn!("ASK: {} (rule: {})", call.tool, record.reason);
-                                let response = JsonRpcResponse::error(
-                                    request.id,
-                                    crate::types::JsonRpcError::INVALID_REQUEST,
-                                    format!("Requires approval: {}", record.reason),
-                                );
-                                let mut out = stdout.lock();
-                                let _ =
-                                    writeln!(out, "{}", serde_json::to_string(&response).unwrap());
-                                let _ = out.flush();
-                            }
-                        }
-                    } else {
-                        debug!("Forwarding non-tool-call request: {}", request.method);
-                        let _ = writeln!(server_stdin, "{}", trimmed);
-                        let _ = server_stdin.flush();
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to read from stdin: {}", e);
-                    break;
-                }
-            }
-        }
-
-        drop(server_stdin);
-        let _ = child.wait();
-        let _ = stdout_handle.join();
-        Ok(())
+        self.run_inner(false)
     }
 
     /// Run the proxy loop with graceful shutdown on SIGINT/SIGTERM.
@@ -272,10 +97,22 @@ impl McpProxy {
     /// 2. Kill the MCP server child process
     /// 3. Wait for the server response thread to finish
     pub fn run_with_shutdown(&self) -> Result<(), std::io::Error> {
-        info!(
-            "Starting MCP proxy for server '{}' (graceful shutdown enabled)",
-            self.config.server_name
-        );
+        self.run_inner(true)
+    }
+
+    /// Inner proxy loop shared by `run()` and `run_with_shutdown()`.
+    fn run_inner(&self, graceful_shutdown: bool) -> Result<(), std::io::Error> {
+        if graceful_shutdown {
+            info!(
+                "Starting MCP proxy for server '{}' (graceful shutdown enabled)",
+                self.config.server_name
+            );
+        } else {
+            info!(
+                "Starting MCP proxy for server '{}'",
+                self.config.server_name
+            );
+        }
 
         let mut child = self.spawn_server()?;
         let mut server_stdin = child.stdin.take().unwrap();
@@ -300,20 +137,22 @@ impl McpProxy {
             }
         });
 
-        // Set up shutdown signal handler
+        // Set up shutdown signal handler if graceful shutdown is enabled
         let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let shutdown_clone = shutdown.clone();
-        let _ = ctrlc::set_handler(move || {
-            info!("Shutdown signal received, stopping proxy...");
-            shutdown_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
+        if graceful_shutdown {
+            let shutdown_clone = shutdown.clone();
+            let _ = ctrlc::set_handler(move || {
+                info!("Shutdown signal received, stopping proxy...");
+                shutdown_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
 
         let stdin = std::io::stdin();
         let mut reader = BufReader::new(stdin.lock());
         let stdout = std::io::stdout();
 
         loop {
-            if shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+            if graceful_shutdown && shutdown.load(std::sync::atomic::Ordering::SeqCst) {
                 info!("Shutdown requested, exiting");
                 break;
             }

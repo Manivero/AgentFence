@@ -116,12 +116,12 @@
 - [x] Rate limiting (token bucket algorithm)
 - [ ] Connection pooling
 
-### Priority 5 — Documentation & CI/CD (Planned)
+### Priority 5 — Documentation & CI/CD (In Progress)
 
 - [ ] SECURITY.md update
 - [ ] THREAT_MODEL.md update
-- [ ] GitHub Actions CI pipeline
-- [ ] Security audit workflow
+- [x] GitHub Actions CI pipeline
+- [x] Security audit workflow
 
 ## Future Work
 

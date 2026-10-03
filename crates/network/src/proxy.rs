@@ -152,6 +152,9 @@ fn handle_connection(
     // Parse host from URL or Host header
     let (host, port, path) = parse_url(url, &headers);
 
+    // Read request body if Content-Length is present
+    let body = read_request_body(&mut reader, &headers)?;
+
     let record = {
         let action = Action {
             id: ActionId::new(),
@@ -161,7 +164,7 @@ fn handle_connection(
             action_type: ActionType::Network,
             tool: "network".to_string(),
             target: format!("http://{}:{}{}", host, port.unwrap_or(80), path),
-            args_hash: String::new(),
+            args_hash: hash_body(&body),
             context: Default::default(),
         };
         pdp.evaluate(&action)
@@ -178,7 +181,7 @@ fn handle_connection(
             "network",
             "network",
             format!("{}://{}:{}{}", "http", host, port.unwrap_or(80), path),
-            "",
+            hash_body(&body),
             record.decision,
             record.risk_level,
             &record.rule_id,
@@ -478,6 +481,33 @@ fn extract_path(url: &str) -> String {
     "/".to_string()
 }
 
+/// Read request body from the stream based on Content-Length header.
+fn read_request_body(reader: &mut BufReader<TcpStream>, headers: &str) -> std::io::Result<Vec<u8>> {
+    let mut content_length: usize = 0;
+    for line in headers.lines() {
+        if line.to_lowercase().starts_with("content-length:") {
+            content_length = line[15..].trim().parse().unwrap_or(0);
+            break;
+        }
+    }
+
+    if content_length == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut body = vec![0u8; content_length];
+    reader.read_exact(&mut body)?;
+    Ok(body)
+}
+
+/// Hash request body for audit (never store raw body).
+fn hash_body(body: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(body);
+    hex::encode(hasher.finalize())
+}
+
 /// Forward request to target server.
 fn forward_request(
     stream: &mut TcpStream,
@@ -709,5 +739,27 @@ network:
         };
         let record = proxy.evaluate(&req);
         assert_eq!(record.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn test_hash_body_empty() {
+        assert_eq!(
+            hash_body(&[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn test_hash_body_known_content() {
+        let body = b"hello world";
+        let hash = hash_body(body);
+        assert_eq!(hash.len(), 64);
+        assert_ne!(hash, hash_body(&[]));
+    }
+
+    #[test]
+    fn test_hash_body_deterministic() {
+        let body = b"test data";
+        assert_eq!(hash_body(body), hash_body(body));
     }
 }

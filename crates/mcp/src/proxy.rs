@@ -266,12 +266,51 @@ impl McpProxy {
     }
 
     fn spawn_server(&self) -> Result<Child, std::io::Error> {
-        Command::new(&self.config.server_command)
+        let child = Command::new(&self.config.server_command)
             .args(&self.config.server_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .spawn()
+            .spawn();
+
+        match child {
+            Ok(c) => {
+                info!(
+                    "MCP server '{}' spawned (PID: {:?})",
+                    self.config.server_name,
+                    c.id()
+                );
+                Ok(c)
+            }
+            Err(e) => {
+                error!(
+                    "Failed to spawn MCP server '{}': command='{}' args={:?} error={}",
+                    self.config.server_name, self.config.server_command, self.config.server_args, e
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Check if the MCP server process is still running.
+    pub fn is_server_running(&self, child: &mut Child) -> bool {
+        match child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(status)) => {
+                warn!(
+                    "MCP server '{}' exited with status: {}",
+                    self.config.server_name, status
+                );
+                false
+            }
+            Err(e) => {
+                error!(
+                    "Failed to check MCP server '{}' status: {}",
+                    self.config.server_name, e
+                );
+                false
+            }
+        }
     }
 }
 
@@ -382,5 +421,27 @@ mcp:
         };
 
         assert!(!proxy.is_allowed(&call));
+    }
+
+    #[test]
+    fn test_spawn_server_failure() {
+        let mut config = test_config();
+        config.server_command = "nonexistent_command_xyz".to_string();
+        let proxy = McpProxy::new(test_pdp(), config);
+        let result = proxy.spawn_server();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_server_running() {
+        let mut config = test_config();
+        config.server_command = "cat".to_string();
+        config.server_args = vec![];
+        let proxy = McpProxy::new(test_pdp(), config);
+        let mut child = proxy.spawn_server().unwrap();
+        assert!(proxy.is_server_running(&mut child));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(!proxy.is_server_running(&mut child));
     }
 }

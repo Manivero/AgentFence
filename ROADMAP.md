@@ -100,14 +100,28 @@
 - [x] Network proxy audit logging
 - [x] Exec audit logging
 
-### Priority 3 — MCP Reliability (In Progress)
+### Priority 3 — MCP Reliability ✅
 
 - [x] Forward server responses to agent via background thread
 - [x] Server health check (`is_server_running`)
 - [x] Improved spawn error logging
 - [x] Graceful shutdown on SIGINT/SIGTERM
-- [ ] Request timeout handling
-- [ ] Backpressure for slow agents
+- [x] Code deduplication (run_inner)
+- [x] Additional tests for edge cases
+
+### Priority 4 — Network Proxy Hardening (Planned)
+
+- [ ] HTTPS CONNECT tunnel support
+- [ ] Request/response body inspection
+- [ ] Rate limiting
+- [ ] Connection pooling
+
+### Priority 5 — Documentation & CI/CD (Planned)
+
+- [ ] SECURITY.md update
+- [ ] THREAT_MODEL.md update
+- [ ] GitHub Actions CI pipeline
+- [ ] Security audit workflow
 
 ## Future Work
 

@@ -84,7 +84,7 @@
 
 ## Last Verified State
 
-- **Commit:** b090fe9 (CLI audit integration)
+- **Commit:** 7fe100f (MCP + network audit integration)
 - **Tests:** 103 passed, 0 failed
 - **Build:** Success
 - **fmt:** Clean

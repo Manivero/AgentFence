@@ -35,6 +35,72 @@ pub struct NetworkProxyConfig {
         Option<std::sync::Arc<std::sync::Mutex<agentfence_audit::sqlite_store::SqliteStore>>>,
     /// Maximum requests per second per client (0 = unlimited)
     pub rate_limit: u32,
+    /// Maximum number of pooled connections per target host (0 = no pooling)
+    pub pool_size: u32,
+    /// Connection idle timeout in seconds
+    pub pool_timeout: u64,
+}
+
+/// Connection pool entry.
+#[derive(Debug)]
+struct PooledConnection {
+    stream: TcpStream,
+    last_used: std::time::Instant,
+}
+
+/// Connection pool for reusing TCP connections to target hosts.
+#[derive(Debug)]
+struct ConnectionPool {
+    connections: std::collections::HashMap<String, Vec<PooledConnection>>,
+    max_size: u32,
+    timeout: std::time::Duration,
+}
+
+impl ConnectionPool {
+    fn new(max_size: u32, timeout_secs: u64) -> Self {
+        Self {
+            connections: std::collections::HashMap::new(),
+            max_size,
+            timeout: std::time::Duration::from_secs(timeout_secs),
+        }
+    }
+
+    /// Get a connection from the pool or create a new one.
+    fn get(&mut self, host: &str, port: u16) -> Option<TcpStream> {
+        let key = format!("{}:{}", host, port);
+        if let Some(conns) = self.connections.get_mut(&key) {
+            // Remove expired connections
+            conns.retain(|c| c.last_used.elapsed() < self.timeout);
+            if let Some(conn) = conns.pop() {
+                return Some(conn.stream);
+            }
+        }
+        None
+    }
+
+    /// Return a connection to the pool.
+    fn put(&mut self, host: &str, port: u16, stream: TcpStream) {
+        if self.max_size == 0 {
+            return; // Pooling disabled
+        }
+        let key = format!("{}:{}", host, port);
+        let conns = self.connections.entry(key).or_default();
+        if conns.len() < self.max_size as usize {
+            conns.push(PooledConnection {
+                stream,
+                last_used: std::time::Instant::now(),
+            });
+        }
+    }
+
+    /// Clean up expired connections.
+    #[allow(dead_code)] // Used in tests; will be used by periodic cleanup task
+    fn cleanup(&mut self) {
+        for conns in self.connections.values_mut() {
+            conns.retain(|c| c.last_used.elapsed() < self.timeout);
+        }
+        self.connections.retain(|_, conns| !conns.is_empty());
+    }
 }
 
 /// Network proxy.
@@ -257,10 +323,12 @@ fn handle_connection(
         }
     }
 
+    let mut pool = ConnectionPool::new(config.pool_size, config.pool_timeout);
+
     match record.decision {
         agentfence_core::types::Decision::Allow => {
             info!("ALLOWED: {} {}", method, url);
-            forward_request(&mut stream, &host, port, method, &path, &headers)?;
+            forward_request(&mut stream, &host, port, method, &path, &headers, &mut pool)?;
         }
         agentfence_core::types::Decision::Deny => {
             warn!("DENIED: {} {} (rule: {})", method, url, record.rule_id);
@@ -579,11 +647,16 @@ fn forward_request(
     method: &str,
     path: &str,
     headers: &str,
+    pool: &mut ConnectionPool,
 ) -> std::io::Result<()> {
     let port = port.unwrap_or(80);
     let addr = format!("{}:{}", host, port);
 
-    let mut server = TcpStream::connect(&addr)?;
+    // Try to get a connection from the pool
+    let mut server = match pool.get(host, port) {
+        Some(conn) => conn,
+        None => TcpStream::connect(&addr)?,
+    };
 
     // Send request line
     writeln!(server, "{} {} HTTP/1.1", method, path)?;
@@ -609,6 +682,9 @@ fn forward_request(
             }
         }
     }
+
+    // Return connection to pool
+    pool.put(host, port, server);
 
     Ok(())
 }
@@ -642,6 +718,8 @@ network:
             agent_id: AgentId::new("test-agent"),
             audit_store: None,
             rate_limit: 0,
+            pool_size: 0,
+            pool_timeout: 60,
         }
     }
 
@@ -852,5 +930,50 @@ network:
         assert!(!limiter.try_consume());
         std::thread::sleep(std::time::Duration::from_millis(600));
         assert!(limiter.try_consume());
+    }
+
+    #[test]
+    fn test_connection_pool_disabled() {
+        let mut pool = ConnectionPool::new(0, 60);
+        assert!(pool.get("example.com", 80).is_none());
+    }
+
+    #[test]
+    fn test_connection_pool_put_and_get() {
+        let mut pool = ConnectionPool::new(5, 60);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        pool.put("127.0.0.1", addr.port(), stream);
+        assert!(pool.get("127.0.0.1", addr.port()).is_some());
+    }
+
+    #[test]
+    fn test_connection_pool_max_size() {
+        let mut pool = ConnectionPool::new(2, 60);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        for _ in 0..3 {
+            let stream = std::net::TcpStream::connect(addr).unwrap();
+            pool.put("127.0.0.1", addr.port(), stream);
+        }
+        assert_eq!(
+            pool.connections
+                .get(&format!("127.0.0.1:{}", addr.port()))
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_connection_pool_cleanup() {
+        let mut pool = ConnectionPool::new(5, 0);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        pool.put("127.0.0.1", addr.port(), stream);
+        pool.cleanup();
+        assert!(pool.connections.is_empty());
     }
 }

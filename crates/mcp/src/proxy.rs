@@ -485,4 +485,24 @@ mcp:
         let _ = child.wait();
         assert!(!proxy.is_server_running(&mut child));
     }
+
+    #[test]
+    fn test_spawn_server_with_invalid_command() {
+        let mut config = test_config();
+        config.server_command = "definitely_not_a_real_command_12345".to_string();
+        let proxy = McpProxy::new(test_pdp(), config);
+        let result = proxy.spawn_server();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_server_running_after_exit() {
+        let mut config = test_config();
+        config.server_command = "echo".to_string();
+        config.server_args = vec!["hello".to_string()];
+        let proxy = McpProxy::new(test_pdp(), config);
+        let mut child = proxy.spawn_server().unwrap();
+        let _ = child.wait();
+        assert!(!proxy.is_server_running(&mut child));
+    }
 }

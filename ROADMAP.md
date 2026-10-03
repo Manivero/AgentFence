@@ -100,12 +100,14 @@
 - [x] Network proxy audit logging
 - [x] Exec audit logging
 
-### Priority 3 — Async MCP (Planned)
+### Priority 3 — MCP Reliability (In Progress)
 
-- [ ] Evaluate sync vs async stdio
-- [ ] Concurrent request handling
-- [ ] Timeout and cancellation
-- [ ] Backpressure
+- [x] Forward server responses to agent via background thread
+- [x] Server health check (`is_server_running`)
+- [x] Improved spawn error logging
+- [ ] Graceful shutdown on SIGINT/SIGTERM
+- [ ] Request timeout handling
+- [ ] Backpressure for slow agents
 
 ## Future Work
 

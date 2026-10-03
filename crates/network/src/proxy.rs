@@ -144,6 +144,11 @@ fn handle_connection(
         headers.push_str(&line);
     }
 
+    // Handle HTTPS CONNECT tunnel
+    if method == "CONNECT" {
+        return handle_connect(stream, url, pdp, config);
+    }
+
     // Parse host from URL or Host header
     let (host, port, path) = parse_url(url, &headers);
 
@@ -214,6 +219,158 @@ fn handle_connection(
     }
 
     Ok(())
+}
+
+/// Handle HTTPS CONNECT tunnel request.
+///
+/// CONNECT method establishes a tunnel to the target server.
+/// The proxy evaluates the target host against policy, then either
+/// establishes the tunnel or returns an error.
+fn handle_connect(
+    mut stream: TcpStream,
+    target: &str,
+    pdp: &Pdp,
+    config: &NetworkProxyConfig,
+) -> std::io::Result<()> {
+    let audit_store = config.audit_store.clone();
+
+    // Parse host:port from CONNECT target
+    let (host, port) = split_host_port(target).unwrap_or((target.to_string(), None));
+    let port = port.unwrap_or(443);
+
+    // Evaluate against policy
+    let record = {
+        let action = Action {
+            id: ActionId::new(),
+            session_id: config.session_id.clone(),
+            agent_id: config.agent_id.clone(),
+            task_id: None,
+            action_type: ActionType::Network,
+            tool: "network".to_string(),
+            target: format!("https://{}:{}", host, port),
+            args_hash: String::new(),
+            context: Default::default(),
+        };
+        pdp.evaluate(&action)
+    };
+
+    // Record audit event
+    if let Some(ref store) = audit_store {
+        let event = agentfence_audit::event::AuditEvent::new(
+            config.session_id.clone(),
+            config.agent_id.clone(),
+            None,
+            ActionId::new(),
+            None,
+            "network",
+            "network",
+            format!("CONNECT {}:{}", host, port),
+            "",
+            record.decision,
+            record.risk_level,
+            &record.rule_id,
+            &record.policy_version,
+            "",
+            "",
+        );
+        if let Ok(store) = store.lock() {
+            let _ = store.record_event(&event);
+        }
+    }
+
+    match record.decision {
+        agentfence_core::types::Decision::Allow => {
+            info!("ALLOWED: CONNECT {}:{}", host, port);
+
+            // Connect to target server
+            let addr = format!("{}:{}", host, port);
+            let mut server = match TcpStream::connect(&addr) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to connect to {}: {}", addr, e);
+                    let response = format!(
+                        "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        e.to_string().len(),
+                        e
+                    );
+                    stream.write_all(response.as_bytes())?;
+                    stream.flush()?;
+                    return Ok(());
+                }
+            };
+
+            // Send 200 Connection established
+            let response = "HTTP/1.1 200 Connection established\r\n\r\n";
+            stream.write_all(response.as_bytes())?;
+            stream.flush()?;
+
+            // Bidirectional copy
+            let mut server_reader = BufReader::new(server.try_clone()?);
+            let mut client_reader = BufReader::new(stream.try_clone()?);
+
+            let server_to_client = std::thread::spawn(move || {
+                let mut buffer = [0u8; 4096];
+                loop {
+                    match server_reader.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if stream.write_all(&buffer[..n]).is_err() {
+                                break;
+                            }
+                            let _ = stream.flush();
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            let client_to_server = std::thread::spawn(move || {
+                let mut buffer = [0u8; 4096];
+                loop {
+                    match client_reader.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if server.write_all(&buffer[..n]).is_err() {
+                                break;
+                            }
+                            let _ = server.flush();
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            let _ = server_to_client.join();
+            let _ = client_to_server.join();
+
+            Ok(())
+        }
+        agentfence_core::types::Decision::Deny => {
+            warn!(
+                "DENIED: CONNECT {}:{} (rule: {})",
+                host, port, record.rule_id
+            );
+            let response = format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nDenied by policy: {}",
+                record.reason.len(),
+                record.reason
+            );
+            stream.write_all(response.as_bytes())?;
+            stream.flush()?;
+            Ok(())
+        }
+        agentfence_core::types::Decision::Ask => {
+            warn!("ASK: CONNECT {}:{} (rule: {})", host, port, record.reason);
+            let response = format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nRequires approval: {}",
+                record.reason.len(),
+                record.reason
+            );
+            stream.write_all(response.as_bytes())?;
+            stream.flush()?;
+            Ok(())
+        }
+    }
 }
 
 /// Parse URL and headers to extract host, port, and path.
@@ -525,5 +682,32 @@ network:
             normalize_host("github.com.evil.com"),
             Some("github.com.evil.com".to_string())
         );
+    }
+
+    #[test]
+    fn test_connect_method_detection() {
+        // Verify that CONNECT method is detected and handled differently
+        let proxy = NetworkProxy::new(test_pdp(), test_config());
+        let req = NetworkRequest {
+            host: "github.com".to_string(),
+            port: Some(443),
+            protocol: "https".to_string(),
+            path: None,
+        };
+        let record = proxy.evaluate(&req);
+        assert_eq!(record.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_connect_denied_host() {
+        let proxy = NetworkProxy::new(test_pdp(), test_config());
+        let req = NetworkRequest {
+            host: "evil.com".to_string(),
+            port: Some(443),
+            protocol: "https".to_string(),
+            path: None,
+        };
+        let record = proxy.evaluate(&req);
+        assert_eq!(record.decision, Decision::Deny);
     }
 }

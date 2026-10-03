@@ -81,9 +81,34 @@
 - [x] Documentation review (all docs updated)
 - [x] Performance checks (no premature optimization needed)
 
+## Post-MVP v0.2 — In Progress
+
+### Priority 1 — Security Correctness ✅
+
+- [x] Approval scope matching (`matches_with_context()`)
+- [x] Shell policy bypass fix (exact match)
+- [x] Hostname normalization
+- [x] Duplicate `Decision` type removed
+
+### Priority 2 — SQLite Persistence ✅
+
+- [x] `SqliteStore` with full schema
+- [x] Canonical hash chain (`compute_hash_with_previous`)
+- [x] JSONL migration
+- [x] CLI integration (`logs`, `audit verify`)
+- [x] MCP proxy audit logging
+- [x] Network proxy audit logging
+- [x] Exec audit logging
+
+### Priority 3 — Async MCP (Planned)
+
+- [ ] Evaluate sync vs async stdio
+- [ ] Concurrent request handling
+- [ ] Timeout and cancellation
+- [ ] Backpressure
+
 ## Future Work
 
-- SQLite persistence
 - HTTP/SSE MCP transport
 - Container enforcement
 - WSL enforcement

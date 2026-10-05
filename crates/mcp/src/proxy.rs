@@ -18,6 +18,7 @@ use tracing::{debug, error, info, warn};
 
 use agentfence_core::types::{Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId};
 use agentfence_policy::pdp::Pdp;
+use agentfence_secrets::detector::SecretDetector;
 
 use crate::types::{JsonRpcRequest, JsonRpcResponse, ToolsCallParams};
 
@@ -48,12 +49,29 @@ pub struct ProxyConfig {
 pub struct McpProxy {
     pdp: Pdp,
     config: ProxyConfig,
+    secret_detector: SecretDetector,
 }
 
 impl McpProxy {
     /// Create a new MCP proxy with the given PDP and configuration.
     pub fn new(pdp: Pdp, config: ProxyConfig) -> Self {
-        Self { pdp, config }
+        Self {
+            pdp,
+            config,
+            secret_detector: SecretDetector::new(),
+        }
+    }
+
+    /// Check if a tool call contains secrets.
+    ///
+    /// Returns a list of detected secrets (without raw values).
+    /// Never logs or returns raw secret values.
+    pub fn check_secrets(
+        &self,
+        call: &McpToolCall,
+    ) -> Vec<agentfence_secrets::detector::DetectedSecret> {
+        let args_str = serde_json::to_string(&call.arguments).unwrap_or_default();
+        self.secret_detector.detect(&args_str, "mcp")
     }
 
     /// Evaluate a tool call.
@@ -569,5 +587,46 @@ mcp:
         let mut child = proxy.spawn_server().unwrap();
         let _ = child.wait();
         assert!(!proxy.is_server_running(&mut child));
+    }
+
+    #[test]
+    fn test_secret_detection_in_tool_call() {
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let call = McpToolCall {
+            tool: "github.create_issue".to_string(),
+            arguments: serde_json::json!({"token": "ghp_1234567890abcdef"}),
+            server: Some("github".to_string()),
+        };
+        let secrets = proxy.check_secrets(&call);
+        assert!(!secrets.is_empty());
+        assert!(secrets
+            .iter()
+            .any(|s| s.category == agentfence_secrets::detector::SecretCategory::GitHubToken));
+    }
+
+    #[test]
+    fn test_no_secrets_in_normal_tool_call() {
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let call = McpToolCall {
+            tool: "github.create_issue".to_string(),
+            arguments: serde_json::json!({"title": "Bug report", "body": "Something is broken"}),
+            server: Some("github".to_string()),
+        };
+        let secrets = proxy.check_secrets(&call);
+        assert!(secrets.is_empty());
+    }
+
+    #[test]
+    fn test_secret_fingerprint_not_raw() {
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let call = McpToolCall {
+            tool: "github.create_issue".to_string(),
+            arguments: serde_json::json!({"token": "ghp_1234567890abcdef"}),
+            server: Some("github".to_string()),
+        };
+        let secrets = proxy.check_secrets(&call);
+        for secret in &secrets {
+            assert!(!secret.fingerprint.contains("ghp_1234567890abcdef"));
+        }
     }
 }

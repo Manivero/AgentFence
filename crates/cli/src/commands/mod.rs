@@ -1,6 +1,7 @@
 //! CLI command implementations.
 
 pub mod approve;
+pub mod audit_export;
 pub mod audit_verify;
 pub mod db;
 pub mod exec;

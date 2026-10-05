@@ -139,6 +139,15 @@ enum AuditCommands {
         #[arg(short, long)]
         session: String,
     },
+    /// Export audit events to JSONL
+    Export {
+        /// Session ID (optional, exports all if not specified)
+        #[arg(short, long)]
+        session: Option<String>,
+        /// Output file path
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 fn main() {
@@ -192,6 +201,9 @@ fn main() {
         Commands::Audit { command } => match command {
             AuditCommands::Verify { session } => {
                 commands::audit_verify::execute(&session);
+            }
+            AuditCommands::Export { session, output } => {
+                commands::audit_export::execute(session, &output);
             }
         },
     }

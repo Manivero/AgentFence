@@ -6,6 +6,7 @@
 
 pub mod event;
 pub mod hashchain;
+pub mod otel;
 pub mod session;
 pub mod siem;
 pub mod sqlite_store;

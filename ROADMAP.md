@@ -162,6 +162,13 @@
 - [x] check_secrets() method for command inspection
 - [x] Unit tests for secret detection in shell commands
 
+### Priority 12 — OpenTelemetry Export ✅
+
+- [x] OTLP/HTTP JSON payload exporter
+- [x] Payload without raw secrets (only fingerprints/metadata)
+- [x] Retry logic and configurable timeout
+- [x] Unit tests for payload safety
+
 ## Future Work
 
 - Container enforcement
@@ -170,4 +177,3 @@
 - OS-specific enforcement
 - LLM-based anomaly detection (advisory only)
 - Web UI
-- OpenTelemetry export

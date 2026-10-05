@@ -136,6 +136,19 @@
 - [x] Health check endpoint
 - [x] CLI command: agentfence mcp http
 
+### Priority 8 — Policy Ask List ✅
+
+- [x] Add 'ask' field to ShellPolicy, NetworkPolicy, McpPolicy
+- [x] Implement ask list checking in evaluate_shell, evaluate_mcp, evaluate_network
+- [x] Integration tests package with 5 end-to-end tests
+- [x] Unit tests for ask functionality in policy model
+
+### Priority 9 — Audit Export ✅
+
+- [x] CLI command: agentguard audit export
+- [x] Export events by session or all sessions
+- [x] Output to specified file path
+
 ## Future Work
 
 - Container enforcement

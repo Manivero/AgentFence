@@ -61,6 +61,22 @@ mcp:
 - `deny` — Explicitly deny
 - `ask` — Require approval
 
+## Ask List
+
+Each policy section (shell, network, mcp) supports an `ask` list. Commands/tools/hosts
+matching an `ask` entry require human approval before execution.
+
+```yaml
+shell:
+  allow:
+    - git
+  ask:
+    - npm        # npm install requires approval
+    - docker     # docker build requires approval
+  deny:
+    - powershell
+```
+
 ## Defaults
 
 If no rule matches, the default decision is used.
@@ -98,8 +114,9 @@ MCP tools are matched by tool name:
 ## Policy Evaluation Order
 
 1. Check deny rules first
-2. Check allow rules
-3. Use default decision
+2. Check ask rules (require approval)
+3. Check allow rules
+4. Use default decision
 
 ## Policy Versioning
 

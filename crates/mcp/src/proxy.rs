@@ -81,6 +81,71 @@ impl McpProxy {
         matches!(record.decision, agentfence_core::types::Decision::Allow)
     }
 
+    /// Forward a tool call to the MCP server via stdio.
+    ///
+    /// Returns the server response as a JSON value.
+    /// This method assumes the call has already been authorized.
+    pub fn forward_to_server(&self, call: &McpToolCall) -> Result<Value, std::io::Error> {
+        use serde_json::json;
+
+        let mut child = self.spawn_server()?;
+        let mut server_stdin = child.stdin.take().unwrap();
+        let server_stdout = child.stdout.take().unwrap();
+
+        // Send tool call request
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": call.tool,
+                "arguments": call.arguments,
+            }
+        });
+        writeln!(server_stdin, "{}", request)?;
+        server_stdin.flush()?;
+
+        // Read response
+        let mut reader = BufReader::new(server_stdout);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+
+        let response: Value = serde_json::from_str(&line)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+        let _ = child.wait();
+        Ok(response)
+    }
+
+    /// Forward a non-tool-call request to the MCP server via stdio.
+    ///
+    /// Returns the server response as a JSON value.
+    pub fn forward_non_tool_call(&self, request: &JsonRpcRequest) -> Result<Value, std::io::Error> {
+        let mut child = self.spawn_server()?;
+        let mut server_stdin = child.stdin.take().unwrap();
+        let server_stdout = child.stdout.take().unwrap();
+
+        // Forward request
+        writeln!(
+            server_stdin,
+            "{}",
+            serde_json::to_string(request)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
+        )?;
+        server_stdin.flush()?;
+
+        // Read response
+        let mut reader = BufReader::new(server_stdout);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+
+        let response: Value = serde_json::from_str(&line)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+        let _ = child.wait();
+        Ok(response)
+    }
+
     /// Run the proxy loop.
     ///
     /// Reads JSON-RPC requests from stdin, evaluates tool calls,
@@ -355,7 +420,7 @@ impl McpProxy {
     }
 }
 
-fn hash_args(args: &Value) -> String {
+pub fn hash_args(args: &Value) -> String {
     use sha2::{Digest, Sha256};
     let json = serde_json::to_string(args).unwrap_or_default();
     let mut hasher = Sha256::new();

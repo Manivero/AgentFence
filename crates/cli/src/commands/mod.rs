@@ -6,6 +6,7 @@ pub mod db;
 pub mod exec;
 pub mod init;
 pub mod logs;
+pub mod mcp_http;
 pub mod mcp_proxy;
 pub mod network_proxy;
 pub mod policy_check;

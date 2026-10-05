@@ -103,6 +103,18 @@ enum McpCommands {
         #[arg(short, long)]
         policy: String,
     },
+    /// Start MCP HTTP transport
+    Http {
+        /// Server name
+        #[arg(short, long)]
+        server: String,
+        /// Policy file path
+        #[arg(short, long)]
+        policy: String,
+        /// Listen address
+        #[arg(short, long, default_value = "127.0.0.1:9000")]
+        listen: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -144,6 +156,13 @@ fn main() {
         Commands::Mcp { command } => match command {
             McpCommands::Proxy { server, policy } => {
                 commands::mcp_proxy::execute(&server, &policy);
+            }
+            McpCommands::Http {
+                server,
+                policy,
+                listen,
+            } => {
+                commands::mcp_http::execute(&server, &policy, &listen);
             }
         },
         Commands::Network { policy, listen } => {

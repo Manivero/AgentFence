@@ -4,4 +4,5 @@
 //! decision application. Future backends: cooperative, container,
 //! OpenShell, WSL, VM, Windows, Linux.
 
+pub mod anomaly;
 pub mod pep;

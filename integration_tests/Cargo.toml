@@ -1,0 +1,19 @@
+[package]
+name = "agentfence-integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+agentfence-core = { path = "../crates/core" }
+agentfence-policy = { path = "../crates/policy" }
+agentfence-audit = { path = "../crates/audit" }
+agentfence-shell = { path = "../crates/shell" }
+agentfence-mcp = { path = "../crates/mcp" }
+agentfence-network = { path = "../crates/network" }
+agentfence-secrets = { path = "../crates/secrets" }
+agentfence-approval = { path = "../crates/approval" }
+agentfence-enforcement = { path = "../crates/enforcement" }
+agentfence-hermes = { path = "../crates/hermes" }
+uuid = { version = "1", features = ["v4"] }
+rusqlite = { version = "0.31", features = ["bundled"] }

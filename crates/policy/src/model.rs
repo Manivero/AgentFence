@@ -72,6 +72,8 @@ pub struct ShellPolicy {
     pub allow: Vec<String>,
     #[serde(default)]
     pub deny: Vec<String>,
+    #[serde(default)]
+    pub ask: Vec<String>,
 }
 
 // ─── Network Policy ──────────────────────────────────────────────────────────
@@ -82,6 +84,8 @@ pub struct NetworkPolicy {
     pub allow: Vec<String>,
     #[serde(default)]
     pub deny: Vec<String>,
+    #[serde(default)]
+    pub ask: Vec<String>,
 }
 
 // ─── MCP Policy ──────────────────────────────────────────────────────────────
@@ -92,6 +96,8 @@ pub struct McpPolicy {
     pub allow: Vec<String>,
     #[serde(default)]
     pub deny: Vec<String>,
+    #[serde(default)]
+    pub ask: Vec<String>,
 }
 
 // ─── Decision ────────────────────────────────────────────────────────────────
@@ -144,6 +150,19 @@ fn evaluate_shell(policy: &Policy, action: &Action) -> DecisionRecord {
         }
     }
 
+    // Check ask list — must match executable name exactly or be followed by whitespace
+    for asked in &shell.ask {
+        if cmd == asked.as_str()
+            || cmd.starts_with(&format!("{} ", asked))
+            || cmd.starts_with(&format!("{}\t", asked))
+        {
+            return DecisionRecord::ask(
+                "shell.ask",
+                format!("Command requires approval: {}", asked),
+            );
+        }
+    }
+
     // Check allow list — must match executable name exactly or be followed by whitespace
     for allowed in &shell.allow {
         if cmd == allowed.as_str()
@@ -183,6 +202,13 @@ fn evaluate_mcp(policy: &Policy, action: &Action) -> DecisionRecord {
         }
     }
 
+    // Check ask list
+    for asked in &mcp.ask {
+        if tool.contains(asked.as_str()) {
+            return DecisionRecord::ask("mcp.ask", format!("Tool requires approval: {}", asked));
+        }
+    }
+
     // Check allow list
     for allowed in &mcp.allow {
         if tool.contains(allowed.as_str()) {
@@ -214,6 +240,16 @@ fn evaluate_network(policy: &Policy, action: &Action) -> DecisionRecord {
             return DecisionRecord::deny(
                 "network.deny",
                 format!("Host matches denied pattern: {}", denied),
+            );
+        }
+    }
+
+    // Check ask list
+    for asked in &network.ask {
+        if host.contains(asked.as_str()) {
+            return DecisionRecord::ask(
+                "network.ask",
+                format!("Host requires approval: {}", asked),
             );
         }
     }
@@ -582,5 +618,71 @@ network:
         let action = test_action(ActionType::Filesystem, "read", "/etc/shadow");
         let record = evaluate(&policy, &action);
         assert_eq!(record.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn test_shell_ask() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+shell:
+  allow:
+    - git
+  ask:
+    - npm
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Shell, "shell", "npm install");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Ask);
+        assert_eq!(record.rule_id, "shell.ask");
+    }
+
+    #[test]
+    fn test_mcp_ask() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+mcp:
+  allow:
+    - github
+  ask:
+    - shell
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Mcp, "shell", "shell");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Ask);
+        assert_eq!(record.rule_id, "mcp.ask");
+    }
+
+    #[test]
+    fn test_network_ask() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - github.com
+  ask:
+    - npmjs.org
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Network, "network", "registry.npmjs.org");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Ask);
+        assert_eq!(record.rule_id, "network.ask");
     }
 }

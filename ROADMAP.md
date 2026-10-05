@@ -149,6 +149,19 @@
 - [x] Export events by session or all sessions
 - [x] Output to specified file path
 
+### Priority 10 — SIEM Integration ✅
+
+- [x] HTTP webhook sender with retry logic
+- [x] JSON payload without raw secrets
+- [x] Configurable timeout and max retries
+- [x] Unit tests for payload safety
+
+### Priority 11 — Secret Guard Integration ✅
+
+- [x] SecretDetector integrated with ShellGateway
+- [x] check_secrets() method for command inspection
+- [x] Unit tests for secret detection in shell commands
+
 ## Future Work
 
 - Container enforcement
@@ -158,4 +171,3 @@
 - LLM-based anomaly detection (advisory only)
 - Web UI
 - OpenTelemetry export
-- SIEM integration

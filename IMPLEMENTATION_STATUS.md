@@ -84,8 +84,8 @@
 
 ## Last Verified State
 
-- **Commit:** d6f7ad4 (Post-MVP v0.2 complete)
-- **Tests:** 115 passed, 0 failed
+- **Commit:** c936352 (HTTP/SSE MCP transport)
+- **Tests:** 117 passed, 0 failed
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)

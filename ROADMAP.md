@@ -129,9 +129,15 @@
 - [x] Reuse TCP connections to target servers
 - [x] Configure pool size and timeout
 
+### Priority 7 — HTTP/SSE MCP Transport ✅
+
+- [x] HTTP POST /mcp endpoint for JSON-RPC
+- [x] SSE GET /mcp/sse endpoint for streaming
+- [x] Health check endpoint
+- [x] CLI command: agentfence mcp http
+
 ## Future Work
 
-- HTTP/SSE MCP transport
 - Container enforcement
 - WSL enforcement
 - VM enforcement

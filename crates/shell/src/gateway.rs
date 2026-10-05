@@ -5,6 +5,7 @@
 
 use agentfence_core::types::{Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId};
 use agentfence_policy::pdp::Pdp;
+use agentfence_secrets::detector::SecretDetector;
 
 use crate::command::ShellCommand;
 
@@ -14,12 +15,27 @@ use crate::command::ShellCommand;
 /// Never uses naive substring checks as the security model.
 pub struct ShellGateway {
     pdp: Pdp,
+    secret_detector: SecretDetector,
 }
 
 impl ShellGateway {
     /// Create a new shell gateway with the given PDP.
     pub fn new(pdp: Pdp) -> Self {
-        Self { pdp }
+        Self {
+            pdp,
+            secret_detector: SecretDetector::new(),
+        }
+    }
+
+    /// Check if a command contains secrets.
+    ///
+    /// Returns a list of detected secrets (without raw values).
+    /// Never logs or returns raw secret values.
+    pub fn check_secrets(
+        &self,
+        cmd: &ShellCommand,
+    ) -> Vec<agentfence_secrets::detector::DetectedSecret> {
+        self.secret_detector.detect(&cmd.raw, "shell")
     }
 
     /// Evaluate a shell command.
@@ -122,5 +138,34 @@ shell:
 
         let record = gateway.evaluate(&cmd, &session_id, &agent_id);
         assert_eq!(record.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn test_secret_detection_in_command() {
+        let gateway = ShellGateway::new(test_pdp());
+        let cmd = ShellCommand::parse("echo ghp_1234567890abcdef").unwrap();
+        let secrets = gateway.check_secrets(&cmd);
+        assert!(!secrets.is_empty());
+        assert!(secrets
+            .iter()
+            .any(|s| s.category == agentfence_secrets::detector::SecretCategory::GitHubToken));
+    }
+
+    #[test]
+    fn test_no_secrets_in_normal_command() {
+        let gateway = ShellGateway::new(test_pdp());
+        let cmd = ShellCommand::parse("git status").unwrap();
+        let secrets = gateway.check_secrets(&cmd);
+        assert!(secrets.is_empty());
+    }
+
+    #[test]
+    fn test_secret_fingerprint_not_raw() {
+        let gateway = ShellGateway::new(test_pdp());
+        let cmd = ShellCommand::parse("echo ghp_1234567890abcdef").unwrap();
+        let secrets = gateway.check_secrets(&cmd);
+        for secret in &secrets {
+            assert!(!secret.fingerprint.contains("ghp_1234567890abcdef"));
+        }
     }
 }

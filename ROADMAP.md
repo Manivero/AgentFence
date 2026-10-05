@@ -169,11 +169,17 @@
 - [x] Retry logic and configurable timeout
 - [x] Unit tests for payload safety
 
+### Priority 13 — Anomaly Detection (Advisory) ✅
+
+- [x] Session-based pattern analysis
+- [x] Detect excessive actions, denied actions, distinct tools, rapid actions
+- [x] NEVER affects authorization decisions (advisory only, invariant 5.1)
+- [x] Unit tests for anomaly detection
+
 ## Future Work
 
 - Container enforcement
 - WSL enforcement
 - VM enforcement
 - OS-specific enforcement
-- LLM-based anomaly detection (advisory only)
 - Web UI

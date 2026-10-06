@@ -8,3 +8,4 @@ pub mod federated_policy;
 pub mod model;
 pub mod parser;
 pub mod pdp;
+pub mod plugin;

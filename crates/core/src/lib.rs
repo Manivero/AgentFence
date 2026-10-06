@@ -4,4 +4,5 @@
 //! SQLite, or CLI implementation. Core stays independent.
 
 pub mod error;
+pub mod identity;
 pub mod types;

@@ -19,6 +19,9 @@ Thumbs.db
 *.jsonl
 /audit/
 /logs/
+/web-ui/node_modules/
+/web-ui/dist/
+/web-ui/src-tauri/target/
 
 # Environment
 .env

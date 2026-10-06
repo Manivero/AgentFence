@@ -1,0 +1,91 @@
+.approval-queue {
+  max-width: 900px;
+}
+
+.approval-queue h2 {
+  margin-bottom: 1rem;
+  color: #c9d1d9;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem;
+  color: #8b949e;
+}
+
+.empty-state .hint {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.empty-state code {
+  background: #21262d;
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+  color: #58a6ff;
+}
+
+.requests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.request-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.request-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.tool {
+  color: #58a6ff;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.timestamp {
+  color: #8b949e;
+  font-size: 0.75rem;
+}
+
+.request-body p {
+  margin: 0.25rem 0;
+  font-size: 0.875rem;
+}
+
+.request-body strong {
+  color: #8b949e;
+  font-weight: 500;
+}
+
+.request-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.btn-approve {
+  background: #238636;
+  color: #fff;
+}
+
+.btn-approve:hover {
+  background: #2ea043;
+}
+
+.btn-deny {
+  background: #da3633;
+  color: #fff;
+}
+
+.btn-deny:hover {
+  background: #f85149;
+}

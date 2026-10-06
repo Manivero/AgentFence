@@ -6,6 +6,7 @@
 
 pub mod anomaly;
 pub mod container;
+pub mod os_enforcement;
 pub mod pep;
 pub mod vm;
 pub mod wsl;

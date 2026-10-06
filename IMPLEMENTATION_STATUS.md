@@ -84,8 +84,8 @@
 
 ## Last Verified State
 
-- **Commit:** 238b408 (Post-MVP v0.7 complete)
-- **Tests:** 163 passed, 0 failed (158 unit + 5 integration)
+- **Commit:** 72a03da (Post-MVP v0.8 complete)
+- **Tests:** 178 passed, 0 failed (173 unit + 5 integration)
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)

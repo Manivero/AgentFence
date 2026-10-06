@@ -220,6 +220,16 @@
 - [x] VmResult for execution results
 - [x] Unit tests for VM enforcement
 
+### Priority 20 — OS-Specific Enforcement ✅
+
+- [x] OsEnforcer with Linux auditd and Windows ETW support
+- [x] OsEnforcementConfig with process/file/network monitoring options
+- [x] OsEnforcementEvent for kernel-level security events
+- [x] Enable/disable methods for OS enforcement
+- [x] Unit tests for OS enforcement
+
 ## Future Work
 
-- OS-specific enforcement (Linux audit, Windows ETW)
+- Advanced policy conditions (time-based, location-based)
+- Multi-agent coordination
+- Federated policy distribution

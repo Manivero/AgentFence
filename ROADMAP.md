@@ -213,7 +213,13 @@
 - [x] WslMount configuration for filesystem mounts
 - [x] Unit tests for WSL enforcement
 
+### Priority 19 — VM Enforcement ✅
+
+- [x] VmEnforcer with QEMU/VirtualBox/Hyper-V/VMware support
+- [x] VmConfig with resource limits, network isolation, snapshot mode
+- [x] VmResult for execution results
+- [x] Unit tests for VM enforcement
+
 ## Future Work
 
-- VM enforcement
-- OS-specific enforcement
+- OS-specific enforcement (Linux audit, Windows ETW)

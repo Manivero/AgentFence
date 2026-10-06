@@ -64,6 +64,42 @@ pub struct FsRules {
     pub allow: Vec<String>,
 }
 
+// ─── Policy Conditions ──────────────────────────────────────────────────────
+
+/// Time-based condition for policy rules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeCondition {
+    /// Start time in HH:MM format (inclusive)
+    pub start: String,
+    /// End time in HH:MM format (inclusive)
+    pub end: String,
+    /// Days of week (0=Sunday, 6=Saturday). Empty = all days.
+    #[serde(default)]
+    pub days: Vec<u8>,
+}
+
+/// Location-based condition for policy rules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocationCondition {
+    /// Allowed IP addresses or CIDR ranges
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+    /// Allowed hostnames
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+}
+
+/// Advanced conditions for policy rules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyConditions {
+    /// Time-based restrictions
+    #[serde(default)]
+    pub time: Option<TimeCondition>,
+    /// Location-based restrictions
+    #[serde(default)]
+    pub location: Option<LocationCondition>,
+}
+
 // ─── Shell Policy ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +110,8 @@ pub struct ShellPolicy {
     pub deny: Vec<String>,
     #[serde(default)]
     pub ask: Vec<String>,
+    #[serde(default)]
+    pub conditions: Option<PolicyConditions>,
 }
 
 // ─── Network Policy ──────────────────────────────────────────────────────────
@@ -86,6 +124,8 @@ pub struct NetworkPolicy {
     pub deny: Vec<String>,
     #[serde(default)]
     pub ask: Vec<String>,
+    #[serde(default)]
+    pub conditions: Option<PolicyConditions>,
 }
 
 // ─── MCP Policy ──────────────────────────────────────────────────────────────
@@ -98,6 +138,8 @@ pub struct McpPolicy {
     pub deny: Vec<String>,
     #[serde(default)]
     pub ask: Vec<String>,
+    #[serde(default)]
+    pub conditions: Option<PolicyConditions>,
 }
 
 // ─── Decision ────────────────────────────────────────────────────────────────
@@ -684,5 +726,77 @@ network:
         let record = evaluate(&policy, &action);
         assert_eq!(record.decision, Decision::Ask);
         assert_eq!(record.rule_id, "network.ask");
+    }
+
+    #[test]
+    fn test_time_condition_parsing() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+shell:
+  allow:
+    - git
+  conditions:
+    time:
+      start: "09:00"
+      end: "17:00"
+      days: [1, 2, 3, 4, 5]
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let shell = policy.shell.as_ref().unwrap();
+        let conditions = shell.conditions.as_ref().unwrap();
+        let time = conditions.time.as_ref().unwrap();
+        assert_eq!(time.start, "09:00");
+        assert_eq!(time.end, "17:00");
+        assert_eq!(time.days, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_location_condition_parsing() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - github.com
+  conditions:
+    location:
+      allowed_ips:
+        - "192.168.1.0/24"
+      allowed_hosts:
+        - "github.com"
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let network = policy.network.as_ref().unwrap();
+        let conditions = network.conditions.as_ref().unwrap();
+        let location = conditions.location.as_ref().unwrap();
+        assert_eq!(location.allowed_ips, vec!["192.168.1.0/24"]);
+        assert_eq!(location.allowed_hosts, vec!["github.com"]);
+    }
+
+    #[test]
+    fn test_no_conditions() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+shell:
+  allow:
+    - git
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let shell = policy.shell.as_ref().unwrap();
+        assert!(shell.conditions.is_none());
     }
 }

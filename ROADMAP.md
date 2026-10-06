@@ -197,9 +197,16 @@
 - [x] Dark theme styling
 - [x] Tauri commands for backend integration
 
+### Priority 17 — Container Enforcement ✅
+
+- [x] ContainerEnforcer with Docker/Podman support
+- [x] ContainerConfig with resource limits, security options
+- [x] ContainerResult for execution results
+- [x] Mount configuration for filesystem mounts
+- [x] Unit tests for container enforcement
+
 ## Future Work
 
-- Container enforcement
 - WSL enforcement
 - VM enforcement
 - OS-specific enforcement

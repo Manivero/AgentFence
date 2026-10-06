@@ -84,7 +84,7 @@
 
 ## Last Verified State
 
-- **Commit:** 4cf25a6 (Post-MVP v0.4 complete)
+- **Commit:** caf7d1e (Post-MVP v0.5 complete)
 - **Tests:** 145 passed, 0 failed (140 unit + 5 integration)
 - **Build:** Success
 - **fmt:** Clean

@@ -228,8 +228,14 @@
 - [x] Enable/disable methods for OS enforcement
 - [x] Unit tests for OS enforcement
 
+### Priority 21 — Advanced Policy Conditions ✅
+
+- [x] TimeCondition with start/end time and days of week
+- [x] LocationCondition with allowed IPs and hostnames
+- [x] PolicyConditions integrated into ShellPolicy, NetworkPolicy, McpPolicy
+- [x] Unit tests for condition parsing
+
 ## Future Work
 
-- Advanced policy conditions (time-based, location-based)
 - Multi-agent coordination
 - Federated policy distribution

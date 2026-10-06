@@ -10,6 +10,7 @@ repository.workspace = true
 agentfence-core = { path = "../core" }
 agentfence-audit = { path = "../audit" }
 agentfence-policy = { path = "../policy" }
+agentfence-secrets = { path = "../secrets" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }

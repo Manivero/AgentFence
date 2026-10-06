@@ -15,6 +15,7 @@ use tracing::{error, info, warn};
 
 use agentfence_core::types::{Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId};
 use agentfence_policy::pdp::Pdp;
+use agentfence_secrets::detector::SecretDetector;
 
 /// Network request.
 #[derive(Debug, Clone)]
@@ -110,12 +111,40 @@ impl ConnectionPool {
 pub struct NetworkProxy {
     pdp: Pdp,
     config: NetworkProxyConfig,
+    secret_detector: SecretDetector,
 }
 
 impl NetworkProxy {
     /// Create a new network proxy with the given PDP and configuration.
     pub fn new(pdp: Pdp, config: NetworkProxyConfig) -> Self {
-        Self { pdp, config }
+        Self {
+            pdp,
+            config,
+            secret_detector: SecretDetector::new(),
+        }
+    }
+
+    /// Check if request headers contain secrets.
+    ///
+    /// Returns a list of detected secrets (without raw values).
+    /// Never logs or returns raw secret values.
+    pub fn check_secrets_in_headers(
+        &self,
+        headers: &str,
+    ) -> Vec<agentfence_secrets::detector::DetectedSecret> {
+        self.secret_detector.detect(headers, "network.headers")
+    }
+
+    /// Check if request body contains secrets.
+    ///
+    /// Returns a list of detected secrets (without raw values).
+    /// Never logs or returns raw secret values.
+    pub fn check_secrets_in_body(
+        &self,
+        body: &[u8],
+    ) -> Vec<agentfence_secrets::detector::DetectedSecret> {
+        let body_str = String::from_utf8_lossy(body);
+        self.secret_detector.detect(&body_str, "network.body")
     }
 
     /// Evaluate a network request.
@@ -975,5 +1004,49 @@ network:
         pool.put("127.0.0.1", addr.port(), stream);
         pool.cleanup();
         assert!(pool.connections.is_empty());
+    }
+
+    #[test]
+    fn test_secret_detection_in_headers() {
+        let proxy = NetworkProxy::new(test_pdp(), test_config());
+        let headers =
+            "Authorization: Bearer ghp_1234567890abcdef\r\nContent-Type: application/json";
+        let secrets = proxy.check_secrets_in_headers(headers);
+        assert!(!secrets.is_empty());
+        assert!(secrets
+            .iter()
+            .any(|s| s.category == agentfence_secrets::detector::SecretCategory::BearerToken));
+    }
+
+    #[test]
+    fn test_secret_detection_in_body() {
+        let proxy = NetworkProxy::new(test_pdp(), test_config());
+        let body = br#"{"token": "ghp_1234567890abcdef"}"#;
+        let secrets = proxy.check_secrets_in_body(body);
+        assert!(!secrets.is_empty());
+        assert!(secrets
+            .iter()
+            .any(|s| s.category == agentfence_secrets::detector::SecretCategory::GitHubToken));
+    }
+
+    #[test]
+    fn test_no_secrets_in_normal_request() {
+        let proxy = NetworkProxy::new(test_pdp(), test_config());
+        let headers = "Content-Type: application/json\r\nAccept: */*";
+        let body = br#"{"query": "hello world"}"#;
+        let header_secrets = proxy.check_secrets_in_headers(headers);
+        let body_secrets = proxy.check_secrets_in_body(body);
+        assert!(header_secrets.is_empty());
+        assert!(body_secrets.is_empty());
+    }
+
+    #[test]
+    fn test_secret_fingerprint_not_raw() {
+        let proxy = NetworkProxy::new(test_pdp(), test_config());
+        let headers = "Authorization: Bearer ghp_1234567890abcdef";
+        let secrets = proxy.check_secrets_in_headers(headers);
+        for secret in &secrets {
+            assert!(!secret.fingerprint.contains("ghp_1234567890abcdef"));
+        }
     }
 }

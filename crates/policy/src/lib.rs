@@ -4,6 +4,7 @@
 //! priority resolution, PDP, decision explanation.
 //! Must **not** execute actions. Only decides.
 
+pub mod federated_policy;
 pub mod model;
 pub mod parser;
 pub mod pdp;

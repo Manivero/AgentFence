@@ -45,6 +45,7 @@ function App() {
 
       <footer className="footer">
         <p>Protection Mode: COOPERATIVE | Security Boundary: LIMITED</p>
+        <p className="version">AgentFence v0.1.0</p>
       </footer>
     </div>
   );

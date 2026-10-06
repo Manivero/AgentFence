@@ -82,3 +82,14 @@
   color: #8b949e;
   font-weight: 500;
 }
+
+.audit-log.loading,
+.audit-log.error {
+  text-align: center;
+  padding: 3rem;
+  color: #8b949e;
+}
+
+.audit-log.error {
+  color: #f85149;
+}

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/tauri';
 import './AuditLog.css';
 
 interface AuditEvent {
@@ -20,10 +21,21 @@ function AuditLog() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // In a real implementation, this would fetch from the Tauri backend
-    // For now, show empty state
-    setLoading(false);
+    loadEvents();
+    const interval = setInterval(loadEvents, 2000);
+    return () => clearInterval(interval);
   }, []);
+
+  async function loadEvents() {
+    try {
+      const result = await invoke<AuditEvent[]>('get_audit_events');
+      setEvents(result);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   if (loading) {
     return <div className="audit-log loading">Loading audit events...</div>;

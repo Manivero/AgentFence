@@ -7,6 +7,17 @@
   color: #c9d1d9;
 }
 
+.approval-queue.loading,
+.approval-queue.error {
+  text-align: center;
+  padding: 3rem;
+  color: #8b949e;
+}
+
+.approval-queue.error {
+  color: #f85149;
+}
+
 .empty-state {
   text-align: center;
   padding: 3rem;

@@ -1,45 +1,40 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/tauri';
 import './PolicyEditor.css';
 
 function PolicyEditor() {
-  const [policy, setPolicy] = useState(`version: 1
-
-defaults:
-  filesystem: deny
-  shell: deny
-  network: deny
-  mcp: deny
-
-shell:
-  allow:
-    - git
-    - cargo
-  ask:
-    - npm
-  deny:
-    - powershell
-
-network:
-  allow:
-    - github.com
-    - crates.io
-  deny:
-    - evil.com
-
-mcp:
-  allow:
-    - github
-  deny:
-    - shell
-`);
-
+  const [policy, setPolicy] = useState('');
   const [saved, setSaved] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const handleSave = () => {
-    // In a real implementation, this would save via Tauri backend
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  useEffect(() => {
+    loadPolicy();
+  }, []);
+
+  async function loadPolicy() {
+    try {
+      const result = await invoke<string>('load_policy');
+      setPolicy(result);
+    } catch (e) {
+      console.error('Failed to load policy:', e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const handleSave = async () => {
+    try {
+      await invoke('save_policy', { policyContent: policy });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      console.error('Failed to save policy:', e);
+    }
   };
+
+  if (loading) {
+    return <div className="policy-editor loading">Loading policy...</div>;
+  }
 
   return (
     <div className="policy-editor">

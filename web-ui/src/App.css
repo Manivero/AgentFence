@@ -69,3 +69,9 @@
   font-size: 0.75rem;
   margin: 0;
 }
+
+.footer .version {
+  color: #6e7681;
+  font-size: 0.625rem;
+  margin-top: 0.25rem;
+}

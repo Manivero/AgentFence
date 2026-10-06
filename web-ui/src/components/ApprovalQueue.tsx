@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/tauri';
 import './ApprovalQueue.css';
 
 interface ApprovalRequest {
@@ -16,18 +17,38 @@ function ApprovalQueue() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // In a real implementation, this would fetch from the Tauri backend
-    setLoading(false);
+    loadRequests();
+    const interval = setInterval(loadRequests, 2000);
+    return () => clearInterval(interval);
   }, []);
 
-  const handleApprove = (id: string) => {
-    // In a real implementation, this would approve via Tauri backend
-    setRequests(requests.filter((r) => r.approval_id !== id));
+  async function loadRequests() {
+    try {
+      const result = await invoke<ApprovalRequest[]>('get_pending_approvals');
+      setRequests(result);
+    } catch (e) {
+      console.error('Failed to load approval requests:', e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const handleApprove = async (id: string) => {
+    try {
+      await invoke('approve_action', { approvalId: id });
+      setRequests(requests.filter((r) => r.approval_id !== id));
+    } catch (e) {
+      console.error('Failed to approve:', e);
+    }
   };
 
-  const handleDeny = (id: string) => {
-    // In a real implementation, this would deny via Tauri backend
-    setRequests(requests.filter((r) => r.approval_id !== id));
+  const handleDeny = async (id: string) => {
+    try {
+      await invoke('deny_action', { approvalId: id });
+      setRequests(requests.filter((r) => r.approval_id !== id));
+    } catch (e) {
+      console.error('Failed to deny:', e);
+    }
   };
 
   if (loading) {

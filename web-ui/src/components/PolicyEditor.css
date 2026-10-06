@@ -7,6 +7,17 @@
   color: #c9d1d9;
 }
 
+.policy-editor.loading,
+.policy-editor.error {
+  text-align: center;
+  padding: 3rem;
+  color: #8b949e;
+}
+
+.policy-editor.error {
+  color: #f85149;
+}
+
 .editor-container {
   margin-bottom: 1rem;
 }

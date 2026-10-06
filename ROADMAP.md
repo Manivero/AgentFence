@@ -205,8 +205,15 @@
 - [x] Mount configuration for filesystem mounts
 - [x] Unit tests for container enforcement
 
+### Priority 18 — WSL Enforcement ✅
+
+- [x] WslEnforcer with WSL distribution support
+- [x] WslConfig with resource limits, network isolation, filesystem isolation
+- [x] WslResult for execution results
+- [x] WslMount configuration for filesystem mounts
+- [x] Unit tests for WSL enforcement
+
 ## Future Work
 
-- WSL enforcement
 - VM enforcement
 - OS-specific enforcement

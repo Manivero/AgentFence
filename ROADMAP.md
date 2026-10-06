@@ -176,6 +176,18 @@
 - [x] NEVER affects authorization decisions (advisory only, invariant 5.1)
 - [x] Unit tests for anomaly detection
 
+### Priority 14 — Secret Guard + MCP ✅
+
+- [x] SecretDetector integrated with McpProxy
+- [x] check_secrets() method for tool call inspection
+- [x] Unit tests for secret detection in MCP tool calls
+
+### Priority 15 — Secret Guard + Network ✅
+
+- [x] SecretDetector integrated with NetworkProxy
+- [x] check_secrets_in_headers() and check_secrets_in_body() methods
+- [x] Unit tests for secret detection in network requests
+
 ## Future Work
 
 - Container enforcement

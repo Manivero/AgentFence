@@ -270,7 +270,26 @@
 - [x] PluginContext and PluginResult for evaluation
 - [x] Unit tests for plugin system
 
+### Priority 26 — External Identity Provider Integration ✅
+
+- [x] IdentityProvider with OIDC, LDAP, SAML, and API key support
+- [x] IdentityProviderConfig with provider-specific settings
+- [x] Identity and IdentityToken for authenticated users
+- [x] Role-based access control (RBAC) with allowed roles
+- [x] Token validation and refresh support
+- [x] Unit tests for identity provider
+
+### Priority 27 — ML-Based Anomaly Detection ✅
+
+- [x] MlAnomalyDetector with advisory-only anomaly detection
+- [x] MlAnomalyConfig with z-score, moving average, and ensemble models
+- [x] SessionProfile for behavior profiling
+- [x] MlAnomalyResult with explanation and contributing factors
+- [x] NEVER affects authorization (invariant 5.1)
+- [x] Unit tests for ML anomaly detection
+
 ## Future Work
 
-- Machine learning for anomaly detection
+- Enhanced Web UI with real-time updates
+- Plugin system for custom policy rules
 - Integration with external identity providers

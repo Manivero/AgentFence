@@ -6,6 +6,7 @@
 
 pub mod anomaly;
 pub mod container;
+pub mod ml_anomaly;
 pub mod multi_agent;
 pub mod os_enforcement;
 pub mod pep;

@@ -288,8 +288,14 @@
 - [x] NEVER affects authorization (invariant 5.1)
 - [x] Unit tests for ML anomaly detection
 
+### Priority 28 — Web UI Build Fixes ✅
+
+- [x] Fixed Tauri v2 imports (@tauri-apps/api/core)
+- [x] Fixed tauri.conf.json for Tauri v2 schema
+- [x] Frontend builds successfully (tsc + vite)
+- [x] Tauri backend compiles
+
 ## Future Work
 
-- Enhanced Web UI with real-time updates
-- Plugin system for custom policy rules
-- Integration with external identity providers
+- Plugin system for custom policy rules (ready for use)
+- Integration with external identity providers (ready for configuration)

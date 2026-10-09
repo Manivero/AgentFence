@@ -367,9 +367,92 @@ impl McpProxy {
                             }
                         }
                     } else {
-                        debug!("Forwarding non-tool-call request: {}", request.method);
-                        let _ = writeln!(server_stdin, "{}", trimmed);
-                        let _ = server_stdin.flush();
+                        // Non-tool-call requests must also be authorized.
+                        // Only allow safe MCP protocol methods (initialize, notifications, etc.)
+                        // All other methods require explicit policy authorization.
+                        let is_safe_method = request.method == "initialize"
+                            || request.method == "initialized"
+                            || request.method == "ping"
+                            || request.method.starts_with("notifications/")
+                            || request.method == "tools/list"
+                            || request.method == "resources/list"
+                            || request.method == "prompts/list";
+
+                        if is_safe_method {
+                            debug!("Forwarding safe non-tool-call request: {}", request.method);
+                            let _ = writeln!(server_stdin, "{}", trimmed);
+                            let _ = server_stdin.flush();
+                        } else {
+                            // Evaluate against policy
+                            let call = McpToolCall {
+                                tool: request.method.clone(),
+                                arguments: request.params.clone().unwrap_or(serde_json::json!({})),
+                                server: Some(self.config.server_name.clone()),
+                            };
+                            let record = self.evaluate(&call);
+
+                            // Record audit event
+                            if let Some(ref store) = self.config.audit_store {
+                                let event = agentfence_audit::event::AuditEvent::new(
+                                    self.config.session_id.clone(),
+                                    self.config.agent_id.clone(),
+                                    None,
+                                    ActionId::new(),
+                                    None,
+                                    "mcp",
+                                    &request.method,
+                                    format!("{:?}", call.arguments),
+                                    hash_args(&call.arguments),
+                                    record.decision,
+                                    record.risk_level,
+                                    &record.rule_id,
+                                    &record.policy_version,
+                                    "",
+                                    "",
+                                );
+                                if let Ok(store) = store.lock() {
+                                    let _ = store.record_event(&event);
+                                }
+                            }
+
+                            match record.decision {
+                                agentfence_core::types::Decision::Allow => {
+                                    info!("ALLOWED: {} (rule: {})", request.method, record.rule_id);
+                                    let _ = writeln!(server_stdin, "{}", trimmed);
+                                    let _ = server_stdin.flush();
+                                }
+                                agentfence_core::types::Decision::Deny => {
+                                    warn!("DENIED: {} (rule: {})", request.method, record.rule_id);
+                                    let response = JsonRpcResponse::error(
+                                        request.id,
+                                        crate::types::JsonRpcError::INVALID_REQUEST,
+                                        format!("Denied by policy: {}", record.reason),
+                                    );
+                                    let mut out = stdout.lock();
+                                    let _ = writeln!(
+                                        out,
+                                        "{}",
+                                        serde_json::to_string(&response).unwrap()
+                                    );
+                                    let _ = out.flush();
+                                }
+                                agentfence_core::types::Decision::Ask => {
+                                    warn!("ASK: {} (rule: {})", request.method, record.reason);
+                                    let response = JsonRpcResponse::error(
+                                        request.id,
+                                        crate::types::JsonRpcError::INVALID_REQUEST,
+                                        format!("Requires approval: {}", record.reason),
+                                    );
+                                    let mut out = stdout.lock();
+                                    let _ = writeln!(
+                                        out,
+                                        "{}",
+                                        serde_json::to_string(&response).unwrap()
+                                    );
+                                    let _ = out.flush();
+                                }
+                            }
+                        }
                     }
                 }
                 Err(e) => {

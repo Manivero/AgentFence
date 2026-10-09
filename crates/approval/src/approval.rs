@@ -56,6 +56,10 @@ impl ApprovalRecord {
     /// - `Path`: matches if the action target starts with the path prefix
     /// - `Host`: matches if the action target contains the host
     /// - `Expiry`: matches if not expired (checked separately)
+    ///
+    /// For Repository/Path/Host scopes, this method requires context (target).
+    /// Use `matches_with_context` when target is available.
+    /// This method returns `false` for scopes that require context.
     pub fn matches(&self, action_id: &ActionId, session_id: &SessionId) -> bool {
         if self.action_id != *action_id {
             return false;
@@ -65,17 +69,16 @@ impl ApprovalRecord {
             ApprovalScope::Once => true,
             ApprovalScope::Session => self.session_id == *session_id,
             ApprovalScope::Repository => {
-                // Repository scope: action target must contain the repository name
-                // The repository is stored in the approval_id prefix for this scope
-                true // Simplified: repository matching requires context not available here
+                // Repository scope requires target context — cannot match without it
+                false
             }
             ApprovalScope::Path => {
-                // Path scope: action target must start with the path prefix
-                true // Simplified: path matching requires context not available here
+                // Path scope requires target context — cannot match without it
+                false
             }
             ApprovalScope::Host => {
-                // Host scope: action target must contain the host
-                true // Simplified: host matching requires context not available here
+                // Host scope requires target context — cannot match without it
+                false
             }
             ApprovalScope::Expiry(_) => true,
         }
@@ -179,6 +182,11 @@ impl ApprovalService {
     }
 
     /// Approve an action.
+    ///
+    /// Returns error if:
+    /// - Approval not found
+    /// - Approval has expired
+    /// - Approval was already decided (replay protection)
     pub fn approve(&self, approval_id: &str) -> Result<ApprovalRecord> {
         let mut approvals = self.approvals.lock().unwrap();
 
@@ -192,17 +200,35 @@ impl ApprovalService {
             ));
         }
 
+        // Replay protection: cannot approve an already-decided approval
+        if record.decision != Decision::Ask {
+            return Err(AgentFenceError::Approval(
+                "Approval already decided".to_string(),
+            ));
+        }
+
         record.decision = Decision::Allow;
         Ok(record.clone())
     }
 
     /// Deny an action.
+    ///
+    /// Returns error if:
+    /// - Approval not found
+    /// - Approval was already decided (replay protection)
     pub fn deny(&self, approval_id: &str) -> Result<ApprovalRecord> {
         let mut approvals = self.approvals.lock().unwrap();
 
         let record = approvals
             .get_mut(approval_id)
             .ok_or_else(|| AgentFenceError::Approval("Approval not found".to_string()))?;
+
+        // Replay protection: cannot deny an already-decided approval
+        if record.decision != Decision::Ask {
+            return Err(AgentFenceError::Approval(
+                "Approval already decided".to_string(),
+            ));
+        }
 
         record.decision = Decision::Deny;
         Ok(record.clone())
@@ -384,10 +410,73 @@ mod tests {
         // First approval should succeed
         let first = service.approve(&record.approval_id);
         assert!(first.is_ok());
+        assert_eq!(first.unwrap().decision, Decision::Allow);
 
         // Second approval (replay) should fail - already approved
         let second = service.approve(&record.approval_id);
-        assert!(second.is_ok()); // Still returns the record, but decision is already Allow
+        assert!(second.is_err());
+    }
+
+    #[test]
+    fn test_matches_returns_false_for_scopes_requiring_context() {
+        let service = ApprovalService::new();
+        let action_id = ActionId::new();
+        let session_id = SessionId::new();
+
+        // Repository scope — matches() without context must return false
+        let record = service
+            .request_approval(
+                action_id.clone(),
+                session_id.clone(),
+                ApprovalScope::Repository,
+                "v1",
+            )
+            .unwrap();
+        assert!(!record.matches(&action_id, &session_id));
+
+        // Path scope — matches() without context must return false
+        let record = service
+            .request_approval(
+                action_id.clone(),
+                session_id.clone(),
+                ApprovalScope::Path,
+                "v1",
+            )
+            .unwrap();
+        assert!(!record.matches(&action_id, &session_id));
+
+        // Host scope — matches() without context must return false
+        let record = service
+            .request_approval(
+                action_id.clone(),
+                session_id.clone(),
+                ApprovalScope::Host,
+                "v1",
+            )
+            .unwrap();
+        assert!(!record.matches(&action_id, &session_id));
+
+        // Once scope — matches() should return true
+        let record = service
+            .request_approval(
+                action_id.clone(),
+                session_id.clone(),
+                ApprovalScope::Once,
+                "v1",
+            )
+            .unwrap();
+        assert!(record.matches(&action_id, &session_id));
+
+        // Session scope — matches() should return true
+        let record = service
+            .request_approval(
+                action_id.clone(),
+                session_id.clone(),
+                ApprovalScope::Session,
+                "v1",
+            )
+            .unwrap();
+        assert!(record.matches(&action_id, &session_id));
     }
 
     #[test]

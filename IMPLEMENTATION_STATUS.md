@@ -84,12 +84,24 @@
 
 ## Last Verified State
 
-- **Commit:** 67534d4 (Post-MVP v1.0 complete)
-- **Tests:** 201 passed, 0 failed (196 unit + 5 integration)
+- **Commit:** 700d695 (Security audit fixes)
+- **Tests:** 207 passed, 0 failed (202 unit + 5 integration)
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)
-- **Date:** 2026-10-05
+- **Date:** 2026-10-08
+
+## Security Audit Results
+
+### Critical Fixes Applied
+1. MCP proxy: non-tool-call requests now require authorization
+2. Approval: matches() returns false for Repository/Path/Host without context
+3. Approval: replay protection added to approve() and deny()
+
+### Release Readiness: CONDITIONALLY READY
+- All critical authorization bypasses fixed
+- 207 tests passing
+- Remaining risks: shell parser simplification, plugin verification, federation auth
 
 ## Self-Review Gate (Section 39)
 

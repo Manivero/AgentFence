@@ -295,6 +295,60 @@
 - [x] Frontend builds successfully (tsc + vite)
 - [x] Tauri backend compiles
 
+## Security Audit Results (v1.0)
+
+### Critical Fixes Applied ✅
+
+| Fix | Description | Commit |
+|-----|-------------|--------|
+| MCP Proxy | Non-tool-call requests now require authorization | 700d695 |
+| Approval | matches() returns false for Repository/Path/Host without context | 700d695 |
+| Approval | Replay protection for approve() and deny() | 700d695 |
+| Shell Parser | Replaced simplified tokenizer with POSIX-compliant parser (shell-words) | adf13c3 |
+
+### Partially Implemented
+
+| Area | Limitation |
+|------|------------|
+| Shell Command Parser | POSIX-compliant tokenization, but does not prevent all injection vectors |
+| Policy Conditions | Time/location conditions parse but not yet enforced in evaluate() |
+| Container/WSL/VM/OS Enforcement | Architectural scaffolding only, not real OS-level enforcement |
+| Identity Provider | Placeholder implementation, no real protocol endpoints |
+| Plugin System | No signature verification or sandboxing |
+| Federated Policy | No cryptographic authenticity verification |
+| Network Proxy | No IPv6 normalization |
+| Secret Guard | Does not detect all secret types |
+
+### Placeholder / Scaffolding Only
+
+| Area | Status |
+|------|--------|
+| Container Enforcement (Docker/Podman) | Config structs only, no actual enforcement |
+| WSL Enforcement | Config structs only, no actual enforcement |
+| VM Enforcement (QEMU/VirtualBox/Hyper-V/VMware) | Config structs only, no actual enforcement |
+| OS-Specific Enforcement (Linux auditd / Windows ETW) | Config structs only, no actual enforcement |
+| Identity Provider (OIDC/LDAP/SAML/API key) | Trait + config only, no real endpoints |
+| Federated Policy Distribution | Version sync only, no cryptographic signatures |
+
+### Security Findings
+
+| # | Finding | Severity | Status |
+|---|---------|----------|--------|
+| 1 | MCP proxy forwarded non-tool-call requests without authorization | Critical | Fixed |
+| 2 | Approval matches() returned true for Repository/Path/Host without context | Critical | Fixed |
+| 3 | Approval had no replay protection | Critical | Fixed |
+| 4 | Shell parser was simplified, not POSIX-compliant | Medium | Fixed |
+| 5 | Plugin system has no verification | Medium | Open |
+| 6 | Federated policy has no authentication | Medium | Open |
+| 7 | Network proxy does not normalize IPv6 | Medium | Open |
+| 8 | Secret detection does not cover all types | Low | Open |
+
+### Release Readiness: CONDITIONALLY READY
+
+- All critical authorization bypasses fixed
+- 232 tests passing (227 unit + 5 integration)
+- Remaining risks: plugin verification, federation auth, IPv6 normalization, secret detection coverage
+
 ## Future Work
 
 - Plugin system for custom policy rules (ready for use)

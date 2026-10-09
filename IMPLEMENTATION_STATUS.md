@@ -84,12 +84,12 @@
 
 ## Last Verified State
 
-- **Commit:** 700d695 (Security audit fixes)
-- **Tests:** 207 passed, 0 failed (202 unit + 5 integration)
+- **Commit:** adf13c3 (Security audit + shell parser fix)
+- **Tests:** 232 passed, 0 failed (227 unit + 5 integration)
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)
-- **Date:** 2026-10-08
+- **Date:** 2026-10-09
 
 ## Security Audit Results
 
@@ -97,11 +97,16 @@
 1. MCP proxy: non-tool-call requests now require authorization
 2. Approval: matches() returns false for Repository/Path/Host without context
 3. Approval: replay protection added to approve() and deny()
+4. Shell parser: replaced simplified tokenizer with POSIX-compliant parser (shell-words)
 
 ### Release Readiness: CONDITIONALLY READY
 - All critical authorization bypasses fixed
-- 207 tests passing
-- Remaining risks: shell parser simplification, plugin verification, federation auth
+- 232 tests passing
+- Remaining risks: plugin verification, federation auth, IPv6 normalization, secret detection coverage
+
+## Next Priority (post-audit)
+
+**Plugin system security verification** — add signature verification and sandboxing for plugins to prevent a plugin from becoming an authority above the core authorization model.
 
 ## Self-Review Gate (Section 39)
 

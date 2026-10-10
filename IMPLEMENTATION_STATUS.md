@@ -98,15 +98,16 @@
 2. Approval: matches() returns false for Repository/Path/Host without context
 3. Approval: replay protection added to approve() and deny()
 4. Shell parser: replaced simplified tokenizer with POSIX-compliant parser (shell-words)
+5. Plugin system: added fingerprint verification and sandboxing (plugins cannot grant Allow)
 
 ### Release Readiness: CONDITIONALLY READY
 - All critical authorization bypasses fixed
 - 232 tests passing
-- Remaining risks: plugin verification, federation auth, IPv6 normalization, secret detection coverage
+- Remaining risks: federation auth, IPv6 normalization, secret detection coverage
 
 ## Next Priority (post-audit)
 
-**Plugin system security verification** — add signature verification and sandboxing for plugins to prevent a plugin from becoming an authority above the core authorization model.
+**Federated policy authentication** — add cryptographic signatures to prevent policy forgery in federated distribution.
 
 ## Self-Review Gate (Section 39)
 

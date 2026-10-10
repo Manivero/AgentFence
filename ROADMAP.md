@@ -304,7 +304,8 @@
 | MCP Proxy | Non-tool-call requests now require authorization | 700d695 |
 | Approval | matches() returns false for Repository/Path/Host without context | 700d695 |
 | Approval | Replay protection for approve() and deny() | 700d695 |
-| Shell Parser | Replaced simplified tokenizer with POSIX-compliant parser (shell-words) | adf13c3 |
+| Security Fix 4 | Shell Parser | Replaced simplified tokenizer with POSIX-compliant parser (shell-words) | adf13c3 |
+| Security Fix 5 | Plugin System | Added fingerprint verification and sandboxing (plugins cannot grant Allow) | 912077b |
 
 ### Partially Implemented
 

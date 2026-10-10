@@ -306,6 +306,7 @@
 | Approval | Replay protection for approve() and deny() | 700d695 |
 | Security Fix 4 | Shell Parser | Replaced simplified tokenizer with POSIX-compliant parser (shell-words) | adf13c3 |
 | Security Fix 5 | Plugin System | Added fingerprint verification and sandboxing (plugins cannot grant Allow) | 912077b |
+| Security Fix 6 | Federated Policy | Added Ed25519 cryptographic signatures for policy authenticity | 1744f94 |
 
 ### Partially Implemented
 

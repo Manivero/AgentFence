@@ -84,8 +84,8 @@
 
 ## Last Verified State
 
-- **Commit:** adf13c3 (Security audit + shell parser fix)
-- **Tests:** 232 passed, 0 failed (227 unit + 5 integration)
+- **Commit:** 1744f94 (Ed25519 federated policy signatures)
+- **Tests:** 245 passed, 0 failed (240 unit + 5 integration)
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)
@@ -99,15 +99,16 @@
 3. Approval: replay protection added to approve() and deny()
 4. Shell parser: replaced simplified tokenizer with POSIX-compliant parser (shell-words)
 5. Plugin system: added fingerprint verification and sandboxing (plugins cannot grant Allow)
+6. Federated policy: added Ed25519 cryptographic signatures for policy authenticity
 
 ### Release Readiness: CONDITIONALLY READY
 - All critical authorization bypasses fixed
-- 232 tests passing
-- Remaining risks: federation auth, IPv6 normalization, secret detection coverage
+- 245 tests passing
+- Remaining risks: IPv6 normalization, secret detection coverage
 
 ## Next Priority (post-audit)
 
-**Federated policy authentication** — add cryptographic signatures to prevent policy forgery in federated distribution.
+**IPv6 normalization in network proxy** — normalize IPv6 addresses (including IPv4-mapped IPv6 like ::ffff:127.0.0.1) before policy comparison to prevent allowlist bypasses.
 
 ## Self-Review Gate (Section 39)
 

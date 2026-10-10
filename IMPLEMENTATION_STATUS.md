@@ -84,8 +84,8 @@
 
 ## Last Verified State
 
-- **Commit:** 1744f94 (Ed25519 federated policy signatures)
-- **Tests:** 245 passed, 0 failed (240 unit + 5 integration)
+- **Commit:** d1b5305 (IPv6 normalization in network proxy)
+- **Tests:** 265 passed, 0 failed (260 unit + 5 integration)
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)
@@ -100,15 +100,16 @@
 4. Shell parser: replaced simplified tokenizer with POSIX-compliant parser (shell-words)
 5. Plugin system: added fingerprint verification and sandboxing (plugins cannot grant Allow)
 6. Federated policy: added Ed25519 cryptographic signatures for policy authenticity
+7. Network proxy: added IPv6 normalization (loopback, IPv4-mapped, bracketed)
 
 ### Release Readiness: CONDITIONALLY READY
 - All critical authorization bypasses fixed
-- 245 tests passing
-- Remaining risks: IPv6 normalization, secret detection coverage
+- 265 tests passing
+- Remaining risks: secret detection coverage
 
 ## Next Priority (post-audit)
 
-**IPv6 normalization in network proxy** — normalize IPv6 addresses (including IPv4-mapped IPv6 like ::ffff:127.0.0.1) before policy comparison to prevent allowlist bypasses.
+**Secret detection coverage** — expand secret detector to cover more credential types (AWS keys, OAuth tokens, database connection strings, etc.)
 
 ## Self-Review Gate (Section 39)
 

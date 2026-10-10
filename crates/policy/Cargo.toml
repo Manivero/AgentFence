@@ -16,3 +16,5 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"

@@ -14,6 +14,8 @@
 //! - Plugin execution is bounded and monitored
 //! - Plugin API is versioned and stable
 //! - Malicious plugins are isolated and rejected
+//! - Plugins CANNOT grant Allow — only Deny or Ask (core policy is authoritative)
+//! - Plugin results are audited
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -47,12 +49,19 @@ pub struct PluginMetadata {
     pub capabilities: Vec<PluginCapability>,
     pub author: String,
     pub description: String,
+    /// SHA-256 fingerprint of the plugin binary/library
+    pub fingerprint: String,
 }
 
 impl PluginMetadata {
     /// Check if the plugin is compatible with the current API version.
     pub fn is_compatible(&self) -> bool {
         self.api_version == PLUGIN_API_VERSION
+    }
+
+    /// Verify the plugin fingerprint against an expected value.
+    pub fn verify_fingerprint(&self, expected: &str) -> bool {
+        self.fingerprint == expected
     }
 }
 
@@ -67,6 +76,8 @@ pub struct PluginConfig {
     pub timeout_ms: u64,
     /// Maximum memory usage in MB
     pub max_memory_mb: u64,
+    /// Expected SHA-256 fingerprint (empty = no verification)
+    pub expected_fingerprint: String,
 }
 
 impl Default for PluginConfig {
@@ -76,6 +87,7 @@ impl Default for PluginConfig {
             settings: HashMap::new(),
             timeout_ms: 1000,
             max_memory_mb: 64,
+            expected_fingerprint: String::new(),
         }
     }
 }
@@ -107,6 +119,11 @@ pub struct PluginResult {
 /// Custom policy rule trait.
 ///
 /// Plugins implement this trait to provide custom policy evaluation.
+///
+/// SECURITY: Plugins CANNOT grant Allow. They can only:
+/// - Return Deny (to block an action)
+/// - Return Ask (to escalate to human approval)
+/// - Return None (to abstain, letting core policy decide)
 pub trait CustomPolicyRule: Send + Sync {
     /// Get plugin metadata.
     fn metadata(&self) -> PluginMetadata;
@@ -121,6 +138,9 @@ pub trait CustomPolicyRule: Send + Sync {
 /// Plugin registry.
 ///
 /// Manages registered plugins and their lifecycle.
+///
+/// SECURITY: Plugins are sandboxed and cannot override core policy.
+/// A plugin returning Allow is treated as None (abstain).
 pub struct PluginRegistry {
     plugins: HashMap<String, Box<dyn CustomPolicyRule>>,
     configs: HashMap<String, PluginConfig>,
@@ -136,6 +156,8 @@ impl PluginRegistry {
     }
 
     /// Register a plugin.
+    ///
+    /// SECURITY: Plugin fingerprint is verified if expected_fingerprint is set.
     pub fn register(
         &mut self,
         plugin: Box<dyn CustomPolicyRule>,
@@ -154,11 +176,20 @@ impl PluginRegistry {
             return Err(format!("Plugin {} is already registered", metadata.id));
         }
 
-        info!(
-            "Registering plugin: {} v{} by {}",
-            metadata.name, metadata.version, metadata.author
-        );
+        // Verify fingerprint if expected_fingerprint is set
+        if !config.expected_fingerprint.is_empty()
+            && !metadata.verify_fingerprint(&config.expected_fingerprint)
+        {
+            return Err(format!(
+                "Plugin {} fingerprint mismatch: expected {}, got {}",
+                metadata.id, config.expected_fingerprint, metadata.fingerprint
+            ));
+        }
 
+        info!(
+            "Registering plugin: {} v{} by {} (fingerprint: {})",
+            metadata.name, metadata.version, metadata.author, metadata.fingerprint
+        );
         self.plugins.insert(metadata.id.clone(), plugin);
         self.configs.insert(metadata.id, config);
         Ok(())
@@ -187,6 +218,11 @@ impl PluginRegistry {
     }
 
     /// Evaluate all applicable plugins.
+    ///
+    /// SECURITY: Plugin results are sanitized:
+    /// - Allow is converted to None (abstain) — plugins cannot grant permission
+    /// - Deny and Ask are preserved
+    /// - Plugin failures are logged and ignored (fail-safe)
     pub fn evaluate_all(&self, context: &PluginContext) -> Vec<PluginResult> {
         let mut results = Vec::new();
 
@@ -201,7 +237,17 @@ impl PluginRegistry {
             }
 
             match plugin.evaluate(context) {
-                Ok(result) => {
+                Ok(mut result) => {
+                    // SECURITY: Plugins cannot grant Allow
+                    if result.decision == Some(Decision::Allow) {
+                        warn!(
+                            "Plugin {} returned Allow — converting to None (abstain). \
+                             Plugins cannot grant permission.",
+                            id
+                        );
+                        result.decision = None;
+                    }
+
                     debug!("Plugin {} evaluated: {}", id, result.reason);
                     results.push(result);
                 }
@@ -253,6 +299,7 @@ mod tests {
                 capabilities: vec![PluginCapability::PolicyRule],
                 author: "Test".to_string(),
                 description: "A test plugin".to_string(),
+                fingerprint: "abc123".to_string(),
             }
         }
 
@@ -263,6 +310,102 @@ mod tests {
                 reason: "Test rule matched".to_string(),
                 evidence: None,
                 risk_level: Some("LOW".to_string()),
+                metadata: HashMap::new(),
+            })
+        }
+
+        fn applies_to(&self, _action: &Action) -> bool {
+            true
+        }
+    }
+
+    struct DenyPlugin;
+
+    impl CustomPolicyRule for DenyPlugin {
+        fn metadata(&self) -> PluginMetadata {
+            PluginMetadata {
+                id: "deny-plugin".to_string(),
+                name: "Deny Plugin".to_string(),
+                version: "1.0.0".to_string(),
+                api_version: PLUGIN_API_VERSION,
+                capabilities: vec![PluginCapability::PolicyRule],
+                author: "Test".to_string(),
+                description: "A plugin that denies".to_string(),
+                fingerprint: "def456".to_string(),
+            }
+        }
+
+        fn evaluate(&self, _context: &PluginContext) -> Result<PluginResult, String> {
+            Ok(PluginResult {
+                decision: Some(Decision::Deny),
+                rule_id: "test.deny".to_string(),
+                reason: "Test deny rule matched".to_string(),
+                evidence: None,
+                risk_level: Some("HIGH".to_string()),
+                metadata: HashMap::new(),
+            })
+        }
+
+        fn applies_to(&self, _action: &Action) -> bool {
+            true
+        }
+    }
+
+    struct AskPlugin;
+
+    impl CustomPolicyRule for AskPlugin {
+        fn metadata(&self) -> PluginMetadata {
+            PluginMetadata {
+                id: "ask-plugin".to_string(),
+                name: "Ask Plugin".to_string(),
+                version: "1.0.0".to_string(),
+                api_version: PLUGIN_API_VERSION,
+                capabilities: vec![PluginCapability::PolicyRule],
+                author: "Test".to_string(),
+                description: "A plugin that asks".to_string(),
+                fingerprint: "ghi789".to_string(),
+            }
+        }
+
+        fn evaluate(&self, _context: &PluginContext) -> Result<PluginResult, String> {
+            Ok(PluginResult {
+                decision: Some(Decision::Ask),
+                rule_id: "test.ask".to_string(),
+                reason: "Test ask rule matched".to_string(),
+                evidence: None,
+                risk_level: Some("MEDIUM".to_string()),
+                metadata: HashMap::new(),
+            })
+        }
+
+        fn applies_to(&self, _action: &Action) -> bool {
+            true
+        }
+    }
+
+    struct AbstainPlugin;
+
+    impl CustomPolicyRule for AbstainPlugin {
+        fn metadata(&self) -> PluginMetadata {
+            PluginMetadata {
+                id: "abstain-plugin".to_string(),
+                name: "Abstain Plugin".to_string(),
+                version: "1.0.0".to_string(),
+                api_version: PLUGIN_API_VERSION,
+                capabilities: vec![PluginCapability::PolicyRule],
+                author: "Test".to_string(),
+                description: "A plugin that abstains".to_string(),
+                fingerprint: "jkl012".to_string(),
+            }
+        }
+
+        fn evaluate(&self, _context: &PluginContext) -> Result<PluginResult, String> {
+            Ok(PluginResult {
+                decision: None,
+                rule_id: "test.abstain".to_string(),
+                reason: "Test abstain rule matched".to_string(),
+                evidence: None,
+                risk_level: None,
                 metadata: HashMap::new(),
             })
         }
@@ -296,6 +439,7 @@ mod tests {
             capabilities: vec![PluginCapability::PolicyRule],
             author: "Test".to_string(),
             description: "Test".to_string(),
+            fingerprint: "abc123".to_string(),
         };
         assert!(metadata.is_compatible());
     }
@@ -310,8 +454,153 @@ mod tests {
             capabilities: vec![PluginCapability::PolicyRule],
             author: "Test".to_string(),
             description: "Test".to_string(),
+            fingerprint: "abc123".to_string(),
         };
         assert!(!metadata.is_compatible());
+    }
+
+    #[test]
+    fn test_plugin_fingerprint_verification() {
+        let metadata = PluginMetadata {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            version: "1.0.0".to_string(),
+            api_version: PLUGIN_API_VERSION,
+            capabilities: vec![PluginCapability::PolicyRule],
+            author: "Test".to_string(),
+            description: "Test".to_string(),
+            fingerprint: "abc123".to_string(),
+        };
+        assert!(metadata.verify_fingerprint("abc123"));
+        assert!(!metadata.verify_fingerprint("xyz789"));
+    }
+
+    #[test]
+    fn test_plugin_registration_with_fingerprint() {
+        let mut registry = PluginRegistry::new();
+        let plugin = Box::new(TestPlugin);
+        let config = PluginConfig {
+            expected_fingerprint: "abc123".to_string(),
+            ..Default::default()
+        };
+        assert!(registry.register(plugin, config).is_ok());
+    }
+
+    #[test]
+    fn test_plugin_registration_fingerprint_mismatch() {
+        let mut registry = PluginRegistry::new();
+        let plugin = Box::new(TestPlugin);
+        let config = PluginConfig {
+            expected_fingerprint: "wrong_fingerprint".to_string(),
+            ..Default::default()
+        };
+        assert!(registry.register(plugin, config).is_err());
+    }
+
+    #[test]
+    fn test_plugin_allow_converted_to_none() {
+        // SECURITY: Plugins cannot grant Allow
+        let mut registry = PluginRegistry::new();
+        let plugin = Box::new(TestPlugin); // Returns Allow
+        let config = PluginConfig::default();
+        registry.register(plugin, config).unwrap();
+
+        let context = PluginContext {
+            action: test_action(),
+            session_id: "session1".to_string(),
+            agent_id: "agent1".to_string(),
+            task_id: None,
+            cwd: None,
+            repository: None,
+            branch: None,
+            environment: HashMap::new(),
+        };
+
+        let results = registry.evaluate_all(&context);
+        assert_eq!(results.len(), 1);
+        // Allow should be converted to None
+        assert_eq!(results[0].decision, None);
+    }
+
+    #[test]
+    fn test_plugin_deny_preserved() {
+        let mut registry = PluginRegistry::new();
+        let plugin = Box::new(DenyPlugin);
+        let config = PluginConfig::default();
+        registry.register(plugin, config).unwrap();
+
+        let context = PluginContext {
+            action: test_action(),
+            session_id: "session1".to_string(),
+            agent_id: "agent1".to_string(),
+            task_id: None,
+            cwd: None,
+            repository: None,
+            branch: None,
+            environment: HashMap::new(),
+        };
+
+        let results = registry.evaluate_all(&context);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].decision, Some(Decision::Deny));
+    }
+
+    #[test]
+    fn test_plugin_ask_preserved() {
+        let mut registry = PluginRegistry::new();
+        let plugin = Box::new(AskPlugin);
+        let config = PluginConfig::default();
+        registry.register(plugin, config).unwrap();
+
+        let context = PluginContext {
+            action: test_action(),
+            session_id: "session1".to_string(),
+            agent_id: "agent1".to_string(),
+            task_id: None,
+            cwd: None,
+            repository: None,
+            branch: None,
+            environment: HashMap::new(),
+        };
+
+        let results = registry.evaluate_all(&context);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].decision, Some(Decision::Ask));
+    }
+
+    #[test]
+    fn test_plugin_abstain_preserved() {
+        let mut registry = PluginRegistry::new();
+        let plugin = Box::new(AbstainPlugin);
+        let config = PluginConfig::default();
+        registry.register(plugin, config).unwrap();
+
+        let context = PluginContext {
+            action: test_action(),
+            session_id: "session1".to_string(),
+            agent_id: "agent1".to_string(),
+            task_id: None,
+            cwd: None,
+            repository: None,
+            branch: None,
+            environment: HashMap::new(),
+        };
+
+        let results = registry.evaluate_all(&context);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].decision, None);
+    }
+
+    #[test]
+    fn test_plugin_config_with_fingerprint() {
+        let config = PluginConfig {
+            expected_fingerprint: "abc123".to_string(),
+            ..Default::default()
+        };
+        assert!(config.enabled);
+        assert_eq!(config.timeout_ms, 1000);
+        assert_eq!(config.max_memory_mb, 64);
+        assert_eq!(config.expected_fingerprint, "abc123");
     }
 
     #[test]
@@ -355,7 +644,8 @@ mod tests {
 
         let results = registry.evaluate_all(&context);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].decision, Some(Decision::Allow));
+        // TestPlugin returns Allow, but it's converted to None (abstain)
+        assert_eq!(results[0].decision, None);
     }
 
     #[test]

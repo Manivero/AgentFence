@@ -572,13 +572,46 @@ fn parse_url(url: &str, headers: &str) -> (String, Option<u16>, String) {
 /// 2. Remove trailing dot (FQDN form)
 /// 3. Strip default ports (80 for http, 443 for https)
 /// 4. Validate hostname characters
+/// 5. Normalize IPv6 addresses (including IPv4-mapped IPv6)
 ///
 /// Returns `None` if the hostname is invalid.
 pub fn normalize_host(host: &str) -> Option<String> {
     // Split host and port first
     let (host_part, port_part) = split_host_port(host).unwrap_or((host.to_string(), None));
 
-    let mut h = host_part.to_lowercase();
+    let h = host_part.to_lowercase();
+
+    // Check for IPv6 address
+    if h.starts_with('[') && h.ends_with(']') {
+        // IPv6 in brackets: [::1]
+        let ipv6 = &h[1..h.len() - 1];
+        return normalize_ipv6(ipv6, port_part);
+    }
+
+    // Check for IPv4-mapped IPv6: ::ffff:127.0.0.1
+    if let Some(ipv4_part) = h.strip_prefix("::ffff:") {
+        if ipv4_part.parse::<std::net::Ipv4Addr>().is_ok() {
+            // Normalize to IPv4 for policy comparison
+            let mut result = ipv4_part.to_string();
+            if let Some(port) = port_part {
+                if port != 80 && port != 443 {
+                    result = format!("{}:{}", result, port);
+                }
+            }
+            return Some(result);
+        }
+    }
+
+    // Check for bare IPv6 address (no brackets)
+    if h.contains(':') && !h.contains('.') {
+        // Try to parse as IPv6
+        if let Ok(addr) = h.parse::<std::net::Ipv6Addr>() {
+            return normalize_ipv6(&addr.to_string(), port_part);
+        }
+    }
+
+    // Regular hostname
+    let mut h = h;
 
     // Remove trailing dot
     if h.ends_with('.') {
@@ -620,8 +653,96 @@ pub fn normalize_host(host: &str) -> Option<String> {
     Some(h)
 }
 
+/// Normalize an IPv6 address for policy comparison.
+///
+/// Handles:
+/// - IPv4-mapped IPv6 (::ffff:127.0.0.1) → converts to IPv4
+/// - Compressed forms (::1) → expands to full form
+/// - Loopback addresses (::1) → 127.0.0.1
+fn normalize_ipv6(addr: &str, port: Option<u16>) -> Option<String> {
+    // Try to parse as IPv6
+    let ipv6 = match addr.parse::<std::net::Ipv6Addr>() {
+        Ok(a) => a,
+        Err(_) => return None,
+    };
+
+    // Check for IPv4-mapped IPv6 (::ffff:x.x.x.x)
+    if let Some(ipv4) = ipv6.to_ipv4_mapped() {
+        let mut result = ipv4.to_string();
+        if let Some(p) = port {
+            if p != 80 && p != 443 {
+                result = format!("{}:{}", result, p);
+            }
+        }
+        return Some(result);
+    }
+
+    // Check for loopback (::1)
+    if ipv6.is_loopback() {
+        let mut result = "127.0.0.1".to_string();
+        if let Some(p) = port {
+            if p != 80 && p != 443 {
+                result = format!("{}:{}", result, p);
+            }
+        }
+        return Some(result);
+    }
+    let _ = addr; // suppress unused warning
+
+    // For other IPv6 addresses, return the compressed form
+    let mut result = ipv6.to_string();
+    if let Some(p) = port {
+        if p != 80 && p != 443 {
+            result = format!("{}:{}", result, p);
+        }
+    }
+    Some(result)
+}
+
 /// Split host:port string.
+///
+/// Handles IPv4, hostnames, and IPv6 in brackets:
+/// - "example.com:8080" → ("example.com", Some(8080))
+/// - "[::1]:8080" → ("[::1]", Some(8080))
+/// - "[::1]" → ("[::1]", None)
+/// - "::1" → ("::1", None)
+/// - "2001:db8::1" → ("2001:db8::1", None)
 fn split_host_port(s: &str) -> Option<(String, Option<u16>)> {
+    // IPv6 in brackets: [::1] or [::1]:port
+    if s.starts_with('[') {
+        if let Some(close) = s.find(']') {
+            let host = s[..=close].to_string();
+            let rest = &s[close + 1..];
+            if rest.is_empty() {
+                return Some((host, None));
+            }
+            if let Some(stripped) = rest.strip_prefix(':') {
+                let port = stripped.parse().ok()?;
+                return Some((host, Some(port)));
+            }
+            return Some((host, None));
+        }
+    }
+
+    // IPv4-mapped IPv6 with port: ::ffff:127.0.0.1:8080
+    if let Some(rest) = s.strip_prefix("::ffff:") {
+        if let Some(idx) = rest.rfind(':') {
+            let ipv4_part = &rest[..idx];
+            if ipv4_part.parse::<std::net::Ipv4Addr>().is_ok() {
+                let port = rest[idx + 1..].parse().ok()?;
+                return Some((s[..idx + 7].to_string(), Some(port)));
+            }
+        }
+    }
+
+    // Bare IPv6 address (contains multiple colons, no brackets)
+    // Without brackets, port cannot be parsed reliably
+    let colon_count = s.matches(':').count();
+    if colon_count > 1 {
+        return Some((s.to_string(), None));
+    }
+
+    // IPv4 or hostname with port (single colon)
     if let Some(idx) = s.rfind(':') {
         let host = s[..idx].to_string();
         let port = s[idx + 1..].parse().ok()?;
@@ -883,6 +1004,123 @@ network:
             normalize_host("github.com.evil.com"),
             Some("github.com.evil.com".to_string())
         );
+    }
+
+    #[test]
+    fn test_normalize_ipv6_loopback() {
+        // ::1 should normalize to 127.0.0.1
+        assert_eq!(normalize_host("::1"), Some("127.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_ipv6_loopback_bracketed() {
+        // [::1] should normalize to 127.0.0.1
+        assert_eq!(normalize_host("[::1]"), Some("127.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_ipv6_loopback_with_port() {
+        // [::1]:8080 should normalize to 127.0.0.1:8080
+        assert_eq!(
+            normalize_host("[::1]:8080"),
+            Some("127.0.0.1:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_ipv4_mapped_ipv6() {
+        // ::ffff:127.0.0.1 should normalize to 127.0.0.1
+        assert_eq!(
+            normalize_host("::ffff:127.0.0.1"),
+            Some("127.0.0.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_ipv4_mapped_ipv6_with_port() {
+        // ::ffff:127.0.0.1:8080 should normalize to 127.0.0.1:8080
+        assert_eq!(
+            normalize_host("::ffff:127.0.0.1:8080"),
+            Some("127.0.0.1:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_ipv4_mapped_ipv6_github() {
+        // ::ffff:140.82.121.4 should normalize to 140.82.121.4
+        assert_eq!(
+            normalize_host("::ffff:140.82.121.4"),
+            Some("140.82.121.4".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_ipv6_full_address() {
+        // Full IPv6 address should be normalized to compressed form
+        assert_eq!(
+            normalize_host("2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
+            Some("2001:db8:85a3::8a2e:370:7334".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_ipv6_compressed() {
+        // Already compressed IPv6 should stay compressed
+        assert_eq!(
+            normalize_host("2001:db8::1"),
+            Some("2001:db8::1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_ipv6_bracketed_with_port() {
+        // [2001:db8::1]:443 should normalize to 2001:db8::1 (default port stripped)
+        assert_eq!(
+            normalize_host("[2001:db8::1]:443"),
+            Some("2001:db8::1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_ipv6_bracketed_with_non_default_port() {
+        // [2001:db8::1]:8080 should normalize to 2001:db8::1:8080
+        assert_eq!(
+            normalize_host("[2001:db8::1]:8080"),
+            Some("2001:db8::1:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_split_host_port_ipv6_bracketed() {
+        assert_eq!(
+            split_host_port("[::1]:8080"),
+            Some(("[::1]".to_string(), Some(8080)))
+        );
+    }
+
+    #[test]
+    fn test_split_host_port_ipv6_bracketed_no_port() {
+        assert_eq!(split_host_port("[::1]"), Some(("[::1]".to_string(), None)));
+    }
+
+    #[test]
+    fn test_split_host_port_ipv6_bare() {
+        assert_eq!(split_host_port("::1"), Some(("::1".to_string(), None)));
+    }
+
+    #[test]
+    fn test_normalize_ipv6_bypass_attempt() {
+        // ::ffff:github.com is not a valid IPv6 address and should be rejected
+        assert_eq!(normalize_host("::ffff:github.com"), None);
+    }
+
+    #[test]
+    fn test_normalize_ipv6_loopback_bypass() {
+        // ::1 should normalize to 127.0.0.1, not stay as ::1
+        let result = normalize_host("::1");
+        assert_eq!(result, Some("127.0.0.1".to_string()));
+        // Verify it doesn't stay as ::1
+        assert_ne!(result, Some("::1".to_string()));
     }
 
     #[test]

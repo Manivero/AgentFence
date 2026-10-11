@@ -84,8 +84,8 @@
 
 ## Last Verified State
 
-- **Commit:** 6d997f9 (Expanded secret detection coverage)
-- **Tests:** 285 passed, 0 failed (280 unit + 5 integration)
+- **Commit:** cf1bc08 (ML-based secret anomaly detection)
+- **Tests:** 293 passed, 0 failed (288 unit + 5 integration)
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)
@@ -102,15 +102,16 @@
 6. Federated policy: added Ed25519 cryptographic signatures for policy authenticity
 7. Network proxy: added IPv6 normalization (loopback, IPv4-mapped, bracketed)
 8. Secret guard: expanded detection to 10 new categories (AWS, OAuth, DB, Slack, Stripe, Google, npm, SSH)
+9. ML anomaly detection: added ML-based secret anomaly detection (advisory only, never affects authorization)
 
 ### Release Readiness: CONDITIONALLY READY
 - All critical authorization bypasses fixed
-- 285 tests passing
-- Remaining risks: no ML-based secret anomaly detection, no runtime plugin sandboxing
+- 293 tests passing
+- Remaining risks: no runtime plugin sandboxing
 
 ## Next Priority (post-audit)
 
-**ML-based secret anomaly detection** — add statistical analysis to detect unusual secret patterns that don't match known categories (advisory only, never affects authorization)
+**Runtime plugin sandboxing** — add actual sandboxing (seccomp, namespace isolation) to prevent plugins from accessing unauthorized resources
 
 ## Self-Review Gate (Section 39)
 

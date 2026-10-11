@@ -309,6 +309,7 @@
 | Security Fix 6 | Federated Policy | Added Ed25519 cryptographic signatures for policy authenticity | 1744f94 |
 | Security Fix 7 | Network Proxy | Added IPv6 normalization (loopback, IPv4-mapped, bracketed) | d1b5305 |
 | Security Fix 8 | Secret Guard | Expanded detection to 10 new categories (AWS, OAuth, DB, Slack, Stripe, Google, npm, SSH) | 6d997f9 |
+| Security Fix 9 | ML Anomaly Detection | Added ML-based secret anomaly detection (advisory only, never affects authorization) | cf1bc08 |
 
 ### Partially Implemented
 

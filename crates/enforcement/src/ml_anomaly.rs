@@ -322,6 +322,154 @@ impl MlAnomalyDetector {
     pub fn config(&self) -> &MlAnomalyConfig {
         &self.config
     }
+
+    /// Analyze detected secrets for anomalies.
+    ///
+    /// Returns an advisory result. NEVER affects authorization.
+    /// Detects:
+    /// - Unusually high secret count in a single action
+    /// - Secrets in unusual locations
+    /// - Repeated secrets (possible exfiltration)
+    /// - Rare secret categories
+    pub fn analyze_secrets(
+        &mut self,
+        secrets: &[agentfence_secrets::detector::DetectedSecret],
+        action: &Action,
+    ) -> SecretAnomalyResult {
+        if !self.config.enabled || secrets.is_empty() {
+            return SecretAnomalyResult {
+                anomaly_score: 0.0,
+                risk_level: "LOW".to_string(),
+                is_anomalous: false,
+                explanation: "No secrets to analyze".to_string(),
+                factors: vec![],
+                confidence: 0.0,
+            };
+        }
+
+        let session_id = action.session_id.to_string();
+        let profile = self
+            .session_profiles
+            .entry(session_id.clone())
+            .or_insert_with(|| SessionProfile::new(session_id.clone()));
+
+        let mut factors = Vec::new();
+        let mut scores = Vec::new();
+
+        // Factor 1: High secret count
+        if secrets.len() > 3 {
+            scores.push((secrets.len() as f64 / 10.0).min(1.0));
+            factors.push(format!(
+                "High secret count: {} secrets in one action",
+                secrets.len()
+            ));
+        }
+
+        // Factor 2: Multiple secret categories
+        let mut categories: Vec<_> = secrets.iter().map(|s| s.category.clone()).collect();
+        categories.sort_by(|a, b| format!("{:?}", a).cmp(&format!("{:?}", b)));
+        categories.dedup();
+        if categories.len() > 2 {
+            scores.push(categories.len() as f64 / 5.0);
+            factors.push(format!("Multiple secret categories: {}", categories.len()));
+        }
+
+        // Factor 3: Secrets in unusual locations
+        let unusual_locations: Vec<_> = secrets
+            .iter()
+            .filter(|s| {
+                s.location.contains("header")
+                    || s.location.contains("url")
+                    || s.location.contains("query")
+            })
+            .collect();
+        if !unusual_locations.is_empty() {
+            scores.push(unusual_locations.len() as f64 / secrets.len() as f64);
+            factors.push(format!(
+                "Secrets in unusual locations: {}",
+                unusual_locations.len()
+            ));
+        }
+
+        // Factor 4: Repeated secrets (same fingerprint)
+        let mut fingerprints: Vec<_> = secrets.iter().map(|s| s.fingerprint.clone()).collect();
+        fingerprints.sort();
+        fingerprints.dedup();
+        if fingerprints.len() < secrets.len() {
+            scores.push(0.7);
+            factors.push("Repeated secrets detected (possible exfiltration)".to_string());
+        }
+
+        // Factor 5: Critical secret categories present
+        let critical_categories = [
+            agentfence_secrets::detector::SecretCategory::PrivateKey,
+            agentfence_secrets::detector::SecretCategory::AwsSecretKey,
+            agentfence_secrets::detector::SecretCategory::DatabaseConnectionString,
+        ];
+        let has_critical = secrets
+            .iter()
+            .any(|s| critical_categories.contains(&s.category));
+        if has_critical {
+            scores.push(0.8);
+            factors.push("Critical secret category detected".to_string());
+        }
+
+        // Calculate final score
+        let anomaly_score = if scores.is_empty() {
+            0.0
+        } else {
+            scores.iter().sum::<f64>() / scores.len() as f64
+        };
+
+        let is_anomalous = anomaly_score >= self.config.risk_threshold;
+        let risk_level = if anomaly_score >= 0.8 {
+            "CRITICAL"
+        } else if anomaly_score >= 0.6 {
+            "HIGH"
+        } else if anomaly_score >= 0.4 {
+            "MEDIUM"
+        } else {
+            "LOW"
+        };
+
+        let confidence = if profile.action_count >= self.config.min_samples {
+            (profile.action_count as f64 / (profile.action_count as f64 + 10.0)).min(0.95)
+        } else {
+            profile.action_count as f64 / self.config.min_samples as f64 * 0.5
+        };
+
+        let explanation = if factors.is_empty() {
+            "No secret anomalies detected".to_string()
+        } else {
+            factors.join("; ")
+        };
+
+        SecretAnomalyResult {
+            anomaly_score,
+            risk_level: risk_level.to_string(),
+            is_anomalous,
+            explanation,
+            factors,
+            confidence,
+        }
+    }
+}
+
+/// Secret anomaly detection result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretAnomalyResult {
+    /// Anomaly score (0.0 = normal, 1.0 = highly anomalous)
+    pub anomaly_score: f64,
+    /// Risk level
+    pub risk_level: String,
+    /// Whether the secrets are anomalous
+    pub is_anomalous: bool,
+    /// Explanation of the detection
+    pub explanation: String,
+    /// Contributing factors
+    pub factors: Vec<String>,
+    /// Model confidence (0.0-1.0)
+    pub confidence: f64,
 }
 
 #[cfg(test)]
@@ -464,5 +612,154 @@ mod tests {
         let profile = SessionProfile::new("session1".to_string());
         assert_eq!(profile.session_id, "session1");
         assert_eq!(profile.action_count, 0);
+    }
+
+    #[test]
+    fn test_analyze_secrets_empty() {
+        let config = MlAnomalyConfig::default();
+        let mut detector = MlAnomalyDetector::new(config);
+        let action = test_action("shell");
+        let result = detector.analyze_secrets(&[], &action);
+        assert_eq!(result.anomaly_score, 0.0);
+        assert!(!result.is_anomalous);
+    }
+
+    #[test]
+    fn test_analyze_secrets_disabled() {
+        let mut config = MlAnomalyConfig::default();
+        config.enabled = false;
+        let mut detector = MlAnomalyDetector::new(config);
+        let action = test_action("shell");
+        let secrets = vec![agentfence_secrets::detector::DetectedSecret {
+            category: agentfence_secrets::detector::SecretCategory::ApiKey,
+            fingerprint: "fp1".to_string(),
+            location: "test".to_string(),
+        }];
+        let result = detector.analyze_secrets(&secrets, &action);
+        assert_eq!(result.anomaly_score, 0.0);
+        assert!(!result.is_anomalous);
+    }
+
+    #[test]
+    fn test_analyze_secrets_high_count() {
+        let config = MlAnomalyConfig::default();
+        let mut detector = MlAnomalyDetector::new(config);
+        let action = test_action("shell");
+        let secrets: Vec<_> = (0..5)
+            .map(|i| agentfence_secrets::detector::DetectedSecret {
+                category: agentfence_secrets::detector::SecretCategory::ApiKey,
+                fingerprint: format!("fp{}", i),
+                location: "test".to_string(),
+            })
+            .collect();
+        let result = detector.analyze_secrets(&secrets, &action);
+        assert!(result.anomaly_score > 0.0);
+        assert!(result
+            .factors
+            .iter()
+            .any(|f| f.contains("High secret count")));
+    }
+
+    #[test]
+    fn test_analyze_secrets_multiple_categories() {
+        let config = MlAnomalyConfig::default();
+        let mut detector = MlAnomalyDetector::new(config);
+        let action = test_action("shell");
+        let secrets = vec![
+            agentfence_secrets::detector::DetectedSecret {
+                category: agentfence_secrets::detector::SecretCategory::ApiKey,
+                fingerprint: "fp1".to_string(),
+                location: "test".to_string(),
+            },
+            agentfence_secrets::detector::DetectedSecret {
+                category: agentfence_secrets::detector::SecretCategory::Jwt,
+                fingerprint: "fp2".to_string(),
+                location: "test".to_string(),
+            },
+            agentfence_secrets::detector::DetectedSecret {
+                category: agentfence_secrets::detector::SecretCategory::PrivateKey,
+                fingerprint: "fp3".to_string(),
+                location: "test".to_string(),
+            },
+        ];
+        let result = detector.analyze_secrets(&secrets, &action);
+        assert!(result
+            .factors
+            .iter()
+            .any(|f| f.contains("Multiple secret categories")));
+        assert!(result
+            .factors
+            .iter()
+            .any(|f| f.contains("Critical secret category")));
+    }
+
+    #[test]
+    fn test_analyze_secrets_unusual_locations() {
+        let config = MlAnomalyConfig::default();
+        let mut detector = MlAnomalyDetector::new(config);
+        let action = test_action("shell");
+        let secrets = vec![agentfence_secrets::detector::DetectedSecret {
+            category: agentfence_secrets::detector::SecretCategory::ApiKey,
+            fingerprint: "fp1".to_string(),
+            location: "header".to_string(),
+        }];
+        let result = detector.analyze_secrets(&secrets, &action);
+        assert!(result
+            .factors
+            .iter()
+            .any(|f| f.contains("unusual locations")));
+    }
+
+    #[test]
+    fn test_analyze_secrets_repeated() {
+        let config = MlAnomalyConfig::default();
+        let mut detector = MlAnomalyDetector::new(config);
+        let action = test_action("shell");
+        let secrets = vec![
+            agentfence_secrets::detector::DetectedSecret {
+                category: agentfence_secrets::detector::SecretCategory::ApiKey,
+                fingerprint: "same_fp".to_string(),
+                location: "test".to_string(),
+            },
+            agentfence_secrets::detector::DetectedSecret {
+                category: agentfence_secrets::detector::SecretCategory::Jwt,
+                fingerprint: "same_fp".to_string(),
+                location: "test".to_string(),
+            },
+        ];
+        let result = detector.analyze_secrets(&secrets, &action);
+        assert!(result
+            .factors
+            .iter()
+            .any(|f| f.contains("Repeated secrets")));
+    }
+
+    #[test]
+    fn test_analyze_secrets_normal() {
+        let config = MlAnomalyConfig::default();
+        let mut detector = MlAnomalyDetector::new(config);
+        let action = test_action("shell");
+        let secrets = vec![agentfence_secrets::detector::DetectedSecret {
+            category: agentfence_secrets::detector::SecretCategory::ApiKey,
+            fingerprint: "fp1".to_string(),
+            location: "test".to_string(),
+        }];
+        let result = detector.analyze_secrets(&secrets, &action);
+        assert_eq!(result.anomaly_score, 0.0);
+        assert!(!result.is_anomalous);
+    }
+
+    #[test]
+    fn test_secret_anomaly_result_creation() {
+        let result = SecretAnomalyResult {
+            anomaly_score: 0.5,
+            risk_level: "MEDIUM".to_string(),
+            is_anomalous: false,
+            explanation: "Test".to_string(),
+            factors: vec!["factor1".to_string()],
+            confidence: 0.8,
+        };
+        assert_eq!(result.anomaly_score, 0.5);
+        assert_eq!(result.risk_level, "MEDIUM");
     }
 }

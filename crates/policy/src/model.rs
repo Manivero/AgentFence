@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use agentfence_core::types::{Action, ActionType, DecisionRecord};
+use agentfence_core::types::{Action, ActionType, Context, DecisionRecord};
 
 /// Top-level policy structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +98,159 @@ pub struct PolicyConditions {
     /// Location-based restrictions
     #[serde(default)]
     pub location: Option<LocationCondition>,
+}
+
+// ─── Condition Evaluation ────────────────────────────────────────────────────
+//
+// Conditions RESTRICT permissions. They never grant them.
+//
+// SECURITY (fail-closed): if a condition is declared but the data needed to
+// evaluate it is missing, the condition is NOT satisfied. A failed condition
+// on an allow rule produces an explicit DENY — it must never fall through to
+// a permissive default, because that would silently widen the allow rule.
+
+/// Parse "HH:MM" into (hour, minute). Returns None on malformed input.
+fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
+    let (h, m) = s.split_once(':')?;
+    let h: u32 = h.trim().parse().ok()?;
+    let m: u32 = m.trim().parse().ok()?;
+    if h > 23 || m > 59 {
+        return None;
+    }
+    Some((h, m))
+}
+
+/// Check whether a time condition is satisfied at `now` (UTC).
+///
+/// `days` uses 0=Sunday .. 6=Saturday (chrono's `num_days_from_sunday`).
+/// If `start > end` the window wraps across midnight.
+pub fn time_condition_satisfied(cond: &TimeCondition, now: chrono::DateTime<chrono::Utc>) -> bool {
+    use chrono::{Datelike, Timelike};
+
+    let (sh, sm) = match parse_hhmm(&cond.start) {
+        Some(v) => v,
+        None => return false,
+    };
+    let (eh, em) = match parse_hhmm(&cond.end) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    if !cond.days.is_empty() {
+        let today = now.weekday().num_days_from_sunday() as u8;
+        if !cond.days.contains(&today) {
+            return false;
+        }
+    }
+
+    let cur = now.hour() * 60 + now.minute();
+    let start = sh * 60 + sm;
+    let end = eh * 60 + em;
+
+    if start <= end {
+        cur >= start && cur <= end
+    } else {
+        // Window wraps midnight (e.g. 22:00 → 06:00).
+        cur >= start || cur <= end
+    }
+}
+
+/// Match an IP address against an exact address or an IPv4 CIDR block.
+fn ip_matches(ip: &str, allowed: &str) -> bool {
+    if ip.eq_ignore_ascii_case(allowed) {
+        return true;
+    }
+
+    if let Some((net, prefix)) = allowed.split_once('/') {
+        if let (Ok(ip_addr), Ok(net_addr), Ok(prefix_len)) = (
+            ip.parse::<std::net::Ipv4Addr>(),
+            net.parse::<std::net::Ipv4Addr>(),
+            prefix.parse::<u32>(),
+        ) {
+            if prefix_len > 32 {
+                return false;
+            }
+            let mask: u32 = if prefix_len == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix_len)
+            };
+            return (u32::from(ip_addr) & mask) == (u32::from(net_addr) & mask);
+        }
+    }
+
+    false
+}
+
+/// Check whether a location condition is satisfied for the given context.
+///
+/// The client IP and host are read from `context.env_metadata` under the keys
+/// `client_ip` and `host`. Missing metadata means the condition cannot be
+/// evaluated and is therefore NOT satisfied (fail-closed).
+pub fn location_condition_satisfied(cond: &LocationCondition, context: &Context) -> bool {
+    let meta = match &context.env_metadata {
+        Some(m) => m,
+        None => {
+            // No metadata at all: only satisfiable if the condition is empty.
+            return cond.allowed_ips.is_empty() && cond.allowed_hosts.is_empty();
+        }
+    };
+
+    let client_ip = meta.get("client_ip").and_then(|v| v.as_str());
+    let host = meta.get("host").and_then(|v| v.as_str());
+
+    let ip_ok = if cond.allowed_ips.is_empty() {
+        true
+    } else {
+        match client_ip {
+            Some(ip) => cond
+                .allowed_ips
+                .iter()
+                .any(|allowed| ip_matches(ip, allowed)),
+            None => false,
+        }
+    };
+
+    let host_ok = if cond.allowed_hosts.is_empty() {
+        true
+    } else {
+        match host {
+            Some(h) => cond
+                .allowed_hosts
+                .iter()
+                .any(|allowed| h.eq_ignore_ascii_case(allowed)),
+            None => false,
+        }
+    };
+
+    ip_ok && host_ok
+}
+
+/// Check whether all declared conditions are satisfied.
+pub fn conditions_satisfied(
+    conditions: &PolicyConditions,
+    context: &Context,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if let Some(time) = &conditions.time {
+        if !time_condition_satisfied(time, now) {
+            return false;
+        }
+    }
+    if let Some(location) = &conditions.location {
+        if !location_condition_satisfied(location, context) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Convenience: are the conditions attached to an optional policy block satisfied?
+fn conditions_ok(conditions: Option<&PolicyConditions>, context: &Context) -> bool {
+    match conditions {
+        Some(c) => conditions_satisfied(c, context, chrono::Utc::now()),
+        None => true,
+    }
 }
 
 // ─── Shell Policy ────────────────────────────────────────────────────────────
@@ -211,6 +364,15 @@ fn evaluate_shell(policy: &Policy, action: &Action) -> DecisionRecord {
             || cmd.starts_with(&format!("{} ", allowed))
             || cmd.starts_with(&format!("{}\t", allowed))
         {
+            // SECURITY: an allow rule is only honoured when its conditions hold.
+            // A declared-but-unsatisfied condition must DENY, never fall through
+            // to the (possibly permissive) default.
+            if !conditions_ok(shell.conditions.as_ref(), &action.context) {
+                return DecisionRecord::deny(
+                    "shell.conditions",
+                    "Command matches allowed executable but policy conditions are not satisfied",
+                );
+            }
             return DecisionRecord::allow(
                 "shell.allow",
                 format!("Command matches allowed executable: {}", allowed),
@@ -254,6 +416,13 @@ fn evaluate_mcp(policy: &Policy, action: &Action) -> DecisionRecord {
     // Check allow list
     for allowed in &mcp.allow {
         if tool.contains(allowed.as_str()) {
+            // SECURITY: conditions must hold for an allow rule to apply (fail-closed).
+            if !conditions_ok(mcp.conditions.as_ref(), &action.context) {
+                return DecisionRecord::deny(
+                    "mcp.conditions",
+                    "Tool matches allowed pattern but policy conditions are not satisfied",
+                );
+            }
             return DecisionRecord::allow(
                 "mcp.allow",
                 format!("Tool matches allowed pattern: {}", allowed),
@@ -299,6 +468,13 @@ fn evaluate_network(policy: &Policy, action: &Action) -> DecisionRecord {
     // Check allow list
     for allowed in &network.allow {
         if host.contains(allowed.as_str()) {
+            // SECURITY: conditions must hold for an allow rule to apply (fail-closed).
+            if !conditions_ok(network.conditions.as_ref(), &action.context) {
+                return DecisionRecord::deny(
+                    "network.conditions",
+                    "Host matches allowed pattern but policy conditions are not satisfied",
+                );
+            }
             return DecisionRecord::allow(
                 "network.allow",
                 format!("Host matches allowed pattern: {}", allowed),
@@ -798,5 +974,179 @@ shell:
         let policy = parse_policy(yaml).unwrap();
         let shell = policy.shell.as_ref().unwrap();
         assert!(shell.conditions.is_none());
+    }
+
+    // ─── Condition enforcement (fail-closed) ────────────────────────────────
+
+    fn action_with_context(
+        action_type: ActionType,
+        tool: &str,
+        target: &str,
+        ctx: Context,
+    ) -> Action {
+        let mut a = test_action(action_type, tool, target);
+        a.context = ctx;
+        a
+    }
+
+    #[test]
+    fn test_time_condition_satisfied_within_window() {
+        use chrono::TimeZone;
+        let cond = TimeCondition {
+            start: "09:00".to_string(),
+            end: "17:00".to_string(),
+            days: vec![],
+        };
+        let inside = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 12, 0, 0).unwrap();
+        let before = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 8, 0, 0).unwrap();
+        let after = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 18, 0, 0).unwrap();
+        assert!(time_condition_satisfied(&cond, inside));
+        assert!(!time_condition_satisfied(&cond, before));
+        assert!(!time_condition_satisfied(&cond, after));
+    }
+
+    #[test]
+    fn test_time_condition_wraps_midnight() {
+        use chrono::TimeZone;
+        let cond = TimeCondition {
+            start: "22:00".to_string(),
+            end: "06:00".to_string(),
+            days: vec![],
+        };
+        let late = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 23, 30, 0).unwrap();
+        let early = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 5, 0, 0).unwrap();
+        let midday = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 12, 0, 0).unwrap();
+        assert!(time_condition_satisfied(&cond, late));
+        assert!(time_condition_satisfied(&cond, early));
+        assert!(!time_condition_satisfied(&cond, midday));
+    }
+
+    #[test]
+    fn test_time_condition_day_filter() {
+        use chrono::TimeZone;
+        // 2026-01-05 is a Monday (num_days_from_sunday == 1).
+        let cond = TimeCondition {
+            start: "00:00".to_string(),
+            end: "23:59".to_string(),
+            days: vec![1],
+        };
+        let monday = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 12, 0, 0).unwrap();
+        let tuesday = chrono::Utc.with_ymd_and_hms(2026, 1, 6, 12, 0, 0).unwrap();
+        assert!(time_condition_satisfied(&cond, monday));
+        assert!(!time_condition_satisfied(&cond, tuesday));
+    }
+
+    #[test]
+    fn test_time_condition_malformed_is_unsatisfied() {
+        use chrono::TimeZone;
+        let cond = TimeCondition {
+            start: "not-a-time".to_string(),
+            end: "17:00".to_string(),
+            days: vec![],
+        };
+        let now = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 12, 0, 0).unwrap();
+        assert!(!time_condition_satisfied(&cond, now));
+    }
+
+    #[test]
+    fn test_location_condition_ip_cidr() {
+        let cond = LocationCondition {
+            allowed_ips: vec!["192.168.1.0/24".to_string()],
+            allowed_hosts: vec![],
+        };
+        let mut ctx = Context::default();
+        ctx.env_metadata = Some(serde_json::json!({"client_ip": "192.168.1.55"}));
+        assert!(location_condition_satisfied(&cond, &ctx));
+
+        ctx.env_metadata = Some(serde_json::json!({"client_ip": "10.0.0.1"}));
+        assert!(!location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_missing_metadata_fails_closed() {
+        let cond = LocationCondition {
+            allowed_ips: vec!["192.168.1.0/24".to_string()],
+            allowed_hosts: vec![],
+        };
+        // No env_metadata at all → condition cannot be evaluated → NOT satisfied.
+        let ctx = Context::default();
+        assert!(!location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_shell_allow_denied_when_time_condition_unsatisfied() {
+        // SECURITY: an allow rule with a time condition that does not hold must
+        // DENY — it must not silently fall through to a permissive default.
+        let yaml = r#"
+version: 1
+defaults:
+  shell: allow
+  network: deny
+  mcp: deny
+  filesystem: deny
+shell:
+  allow:
+    - git
+  conditions:
+    time:
+      start: "00:00"
+      end: "00:01"
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Shell, "shell", "git status");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "shell.conditions");
+    }
+
+    #[test]
+    fn test_network_allow_denied_when_location_condition_unsatisfied() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: allow
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - github.com
+  conditions:
+    location:
+      allowed_ips:
+        - "192.168.1.0/24"
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        // No client_ip metadata → location condition unsatisfied → DENY.
+        let action = test_action(ActionType::Network, "http", "https://github.com/x");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "network.conditions");
+    }
+
+    #[test]
+    fn test_conditions_satisfied_allows_when_metadata_present() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - github.com
+  conditions:
+    location:
+      allowed_ips:
+        - "192.168.1.0/24"
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let mut ctx = Context::default();
+        ctx.env_metadata = Some(serde_json::json!({"client_ip": "192.168.1.10"}));
+        let action = action_with_context(ActionType::Network, "http", "https://github.com/x", ctx);
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Allow);
+        assert_eq!(record.rule_id, "network.allow");
     }
 }

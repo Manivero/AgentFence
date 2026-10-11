@@ -3,7 +3,7 @@
 //! Provides extensible policy evaluation through plugins:
 //! - Custom rule registration
 //! - Plugin lifecycle management
-//! - Sandboxed execution environment
+//! - Sandboxed execution environment with timeout
 //! - Version and compatibility checking
 //!
 //! Architecture:
@@ -11,14 +11,16 @@
 //!
 //! Security guarantees:
 //! - Plugins cannot access the filesystem or network directly
-//! - Plugin execution is bounded and monitored
+//! - Plugin execution is bounded by timeout and monitored
 //! - Plugin API is versioned and stable
 //! - Malicious plugins are isolated and rejected
 //! - Plugins CANNOT grant Allow — only Deny or Ask (core policy is authoritative)
 //! - Plugin results are audited
+//! - Plugin execution is sandboxed with timeout enforcement
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 use agentfence_core::types::{Action, Decision};
@@ -124,7 +126,7 @@ pub struct PluginResult {
 /// - Return Deny (to block an action)
 /// - Return Ask (to escalate to human approval)
 /// - Return None (to abstain, letting core policy decide)
-pub trait CustomPolicyRule: Send + Sync {
+pub trait CustomPolicyRule: Send + Sync + 'static {
     /// Get plugin metadata.
     fn metadata(&self) -> PluginMetadata;
 
@@ -135,6 +137,9 @@ pub trait CustomPolicyRule: Send + Sync {
     fn applies_to(&self, action: &Action) -> bool;
 }
 
+/// Boxed plugin type.
+type BoxedPlugin = Box<dyn CustomPolicyRule + Send + Sync>;
+
 /// Plugin registry.
 ///
 /// Manages registered plugins and their lifecycle.
@@ -142,7 +147,7 @@ pub trait CustomPolicyRule: Send + Sync {
 /// SECURITY: Plugins are sandboxed and cannot override core policy.
 /// A plugin returning Allow is treated as None (abstain).
 pub struct PluginRegistry {
-    plugins: HashMap<String, Box<dyn CustomPolicyRule>>,
+    plugins: HashMap<String, Arc<Mutex<BoxedPlugin>>>,
     configs: HashMap<String, PluginConfig>,
 }
 
@@ -158,11 +163,7 @@ impl PluginRegistry {
     /// Register a plugin.
     ///
     /// SECURITY: Plugin fingerprint is verified if expected_fingerprint is set.
-    pub fn register(
-        &mut self,
-        plugin: Box<dyn CustomPolicyRule>,
-        config: PluginConfig,
-    ) -> Result<(), String> {
+    pub fn register(&mut self, plugin: BoxedPlugin, config: PluginConfig) -> Result<(), String> {
         let metadata = plugin.metadata();
 
         if !metadata.is_compatible() {
@@ -190,7 +191,8 @@ impl PluginRegistry {
             "Registering plugin: {} v{} by {} (fingerprint: {})",
             metadata.name, metadata.version, metadata.author, metadata.fingerprint
         );
-        self.plugins.insert(metadata.id.clone(), plugin);
+        self.plugins
+            .insert(metadata.id.clone(), Arc::new(Mutex::new(plugin)));
         self.configs.insert(metadata.id, config);
         Ok(())
     }
@@ -209,50 +211,86 @@ impl PluginRegistry {
 
     /// Get plugin metadata.
     pub fn get_metadata(&self, plugin_id: &str) -> Option<PluginMetadata> {
-        self.plugins.get(plugin_id).map(|p| p.metadata())
+        self.plugins
+            .get(plugin_id)
+            .and_then(|p| p.lock().ok().map(|p| p.metadata()))
     }
 
     /// List all registered plugins.
     pub fn list_plugins(&self) -> Vec<PluginMetadata> {
-        self.plugins.values().map(|p| p.metadata()).collect()
+        self.plugins
+            .values()
+            .filter_map(|p| p.lock().ok().map(|p| p.metadata()))
+            .collect()
     }
 
-    /// Evaluate all applicable plugins.
+    /// Evaluate all applicable plugins with timeout enforcement.
     ///
     /// SECURITY: Plugin results are sanitized:
     /// - Allow is converted to None (abstain) — plugins cannot grant permission
     /// - Deny and Ask are preserved
     /// - Plugin failures are logged and ignored (fail-safe)
+    /// - Plugin execution is bounded by timeout
     pub fn evaluate_all(&self, context: &PluginContext) -> Vec<PluginResult> {
         let mut results = Vec::new();
 
-        for (id, plugin) in &self.plugins {
-            let _config = match self.configs.get(id) {
-                Some(c) if c.enabled => c,
+        for (id, plugin_arc) in &self.plugins {
+            let config = match self.configs.get(id) {
+                Some(c) if c.enabled => c.clone(),
                 _ => continue,
             };
 
-            if !plugin.applies_to(&context.action) {
+            // Check whether this plugin applies to the action.
+            let applies = plugin_arc
+                .lock()
+                .map(|p| p.applies_to(&context.action))
+                .unwrap_or(false);
+            if !applies {
                 continue;
             }
 
-            match plugin.evaluate(context) {
-                Ok(mut result) => {
-                    // SECURITY: Plugins cannot grant Allow
-                    if result.decision == Some(Decision::Allow) {
+            // SECURITY: Run plugin evaluation in a worker thread with a bounded
+            // timeout so a hostile or buggy plugin cannot stall the PDP.
+            let timeout_ms = config.timeout_ms;
+            let plugin_id = id.clone();
+            let plugin_clone = Arc::clone(plugin_arc);
+            let context_clone = context.clone();
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = match plugin_clone.lock() {
+                    Ok(p) => p.evaluate(&context_clone),
+                    Err(_) => Err("plugin mutex poisoned".to_string()),
+                };
+                let _ = tx.send(result);
+            });
+
+            match rx.recv_timeout(std::time::Duration::from_millis(timeout_ms)) {
+                Ok(Ok(mut plugin_result)) => {
+                    // SECURITY: Plugins cannot grant Allow.
+                    if plugin_result.decision == Some(Decision::Allow) {
                         warn!(
                             "Plugin {} returned Allow — converting to None (abstain). \
                              Plugins cannot grant permission.",
-                            id
+                            plugin_id
                         );
-                        result.decision = None;
+                        plugin_result.decision = None;
                     }
 
-                    debug!("Plugin {} evaluated: {}", id, result.reason);
-                    results.push(result);
+                    debug!("Plugin {} evaluated: {}", plugin_id, plugin_result.reason);
+                    results.push(plugin_result);
                 }
-                Err(e) => {
-                    warn!("Plugin {} evaluation failed: {}", id, e);
+                Ok(Err(e)) => {
+                    warn!("Plugin {} evaluation failed: {}", plugin_id, e);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    warn!(
+                        "Plugin {} execution timed out after {}ms — result discarded",
+                        plugin_id, timeout_ms
+                    );
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    warn!("Plugin {} evaluation thread disconnected", plugin_id);
                 }
             }
         }
@@ -427,6 +465,83 @@ mod tests {
             args_hash: "hash".to_string(),
             context: Default::default(),
         }
+    }
+
+    struct SlowPlugin;
+
+    impl CustomPolicyRule for SlowPlugin {
+        fn metadata(&self) -> PluginMetadata {
+            PluginMetadata {
+                id: "slow-plugin".to_string(),
+                name: "Slow Plugin".to_string(),
+                version: "1.0.0".to_string(),
+                api_version: PLUGIN_API_VERSION,
+                capabilities: vec![PluginCapability::PolicyRule],
+                author: "test".to_string(),
+                description: "Plugin that sleeps".to_string(),
+                fingerprint: "slow123".to_string(),
+            }
+        }
+
+        fn evaluate(&self, _context: &PluginContext) -> Result<PluginResult, String> {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            Ok(PluginResult {
+                decision: None,
+                rule_id: "slow".to_string(),
+                reason: "Should not reach here".to_string(),
+                evidence: None,
+                risk_level: None,
+                metadata: HashMap::new(),
+            })
+        }
+
+        fn applies_to(&self, _action: &Action) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn test_plugin_timeout() {
+        let mut registry = PluginRegistry::new();
+        let plugin = Box::new(SlowPlugin);
+        let mut config = PluginConfig::default();
+        config.timeout_ms = 50;
+        registry.register(plugin, config).unwrap();
+
+        let context = PluginContext {
+            action: Action {
+                id: ActionId::new(),
+                session_id: SessionId::new_from_string("test".to_string()),
+                agent_id: AgentId::new("test"),
+                task_id: None,
+                action_type: agentfence_core::types::ActionType::Shell,
+                tool: "test".to_string(),
+                target: "test".to_string(),
+                args_hash: "hash".to_string(),
+                context: Default::default(),
+            },
+            session_id: "test".to_string(),
+            agent_id: "test".to_string(),
+            task_id: None,
+            cwd: None,
+            repository: None,
+            branch: None,
+            environment: HashMap::new(),
+        };
+
+        let start = std::time::Instant::now();
+        let results = registry.evaluate_all(&context);
+        let elapsed = start.elapsed().as_millis() as u64;
+
+        assert!(
+            elapsed < 1000,
+            "Plugin did not timeout in time: {}ms",
+            elapsed
+        );
+        assert!(
+            results.is_empty(),
+            "Timed out plugin should not return results"
+        );
     }
 
     #[test]

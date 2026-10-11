@@ -308,6 +308,7 @@
 | Security Fix 5 | Plugin System | Added fingerprint verification and sandboxing (plugins cannot grant Allow) | 912077b |
 | Security Fix 6 | Federated Policy | Added Ed25519 cryptographic signatures for policy authenticity | 1744f94 |
 | Security Fix 7 | Network Proxy | Added IPv6 normalization (loopback, IPv4-mapped, bracketed) | d1b5305 |
+| Security Fix 8 | Secret Guard | Expanded detection to 10 new categories (AWS, OAuth, DB, Slack, Stripe, Google, npm, SSH) | 6d997f9 |
 
 ### Partially Implemented
 
@@ -317,10 +318,10 @@
 | Policy Conditions | Time/location conditions parse but not yet enforced in evaluate() |
 | Container/WSL/VM/OS Enforcement | Architectural scaffolding only, not real OS-level enforcement |
 | Identity Provider | Placeholder implementation, no real protocol endpoints |
-| Plugin System | No signature verification or sandboxing |
-| Federated Policy | No cryptographic authenticity verification |
-| Network Proxy | No IPv6 normalization |
-| Secret Guard | Does not detect all secret types |
+| Plugin System | Fingerprint verification added, but no runtime sandboxing |
+| Federated Policy | Ed25519 signatures added, but no key rotation mechanism |
+| Network Proxy | IPv6 normalization added, but no IPv6 policy evaluation |
+| Secret Guard | 18 categories detected, but no ML-based anomaly detection for secrets |
 
 ### Placeholder / Scaffolding Only
 

@@ -311,13 +311,14 @@
 | Security Fix 8 | Secret Guard | Expanded detection to 10 new categories (AWS, OAuth, DB, Slack, Stripe, Google, npm, SSH) | 6d997f9 |
 | Security Fix 9 | ML Anomaly Detection | Added ML-based secret anomaly detection (advisory only, never affects authorization) | cf1bc08 |
 | Security Fix 10 | Plugin Sandboxing | Runtime plugin sandboxing: bounded timeout, worker-thread isolation, fail-safe discard | 14f33ba |
+| Security Fix 11 | Policy Conditions | Time/location conditions now ENFORCED in evaluation (fail-closed); previously parsed but ignored | c0be1db |
 
 ### Partially Implemented
 
 | Area | Limitation |
 |------|------------|
 | Shell Command Parser | POSIX-compliant tokenization, but does not prevent all injection vectors |
-| Policy Conditions | Time/location conditions parse but not yet enforced in evaluate() |
+| Policy Conditions | Time/location conditions enforced fail-closed; no timezone config (UTC only) |
 | Container/WSL/VM/OS Enforcement | Architectural scaffolding only, not real OS-level enforcement |
 | Identity Provider | Placeholder implementation, no real protocol endpoints |
 | Plugin System | Fingerprint verification + runtime timeout sandboxing; no OS-level (seccomp/namespace) isolation |

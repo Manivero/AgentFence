@@ -84,8 +84,8 @@
 
 ## Last Verified State
 
-- **Commit:** 14f33ba (Runtime plugin sandboxing with timeout enforcement)
-- **Tests:** 293 passed, 0 failed (288 unit + 5 integration)
+- **Commit:** c0be1db (Policy conditions enforced fail-closed)
+- **Tests:** 295+ passed, 0 failed (290+ unit + 5 integration)
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)
@@ -104,6 +104,7 @@
 8. Secret guard: expanded detection to 10 new categories (AWS, OAuth, DB, Slack, Stripe, Google, npm, SSH)
 9. ML anomaly detection: added ML-based secret anomaly detection (advisory only, never affects authorization)
 10. Plugin sandboxing: runtime timeout enforcement + worker-thread isolation (fail-safe discard)
+11. Policy conditions: time/location conditions now enforced in evaluation (fail-closed)
 
 ### Release Readiness: CONDITIONALLY READY
 - All critical authorization bypasses fixed
@@ -112,7 +113,7 @@
 
 ## Next Priority (post-audit)
 
-**OS-level plugin isolation** — seccomp/namespace-based isolation for plugins that execute untrusted native code (only meaningful once out-of-process plugins are supported)
+**Policy timezone support** — allow conditions to specify a timezone instead of UTC-only
 
 ## Self-Review Gate (Section 39)
 

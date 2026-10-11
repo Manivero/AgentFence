@@ -84,7 +84,7 @@
 
 ## Last Verified State
 
-- **Commit:** cf1bc08 (ML-based secret anomaly detection)
+- **Commit:** 14f33ba (Runtime plugin sandboxing with timeout enforcement)
 - **Tests:** 293 passed, 0 failed (288 unit + 5 integration)
 - **Build:** Success
 - **fmt:** Clean
@@ -103,15 +103,16 @@
 7. Network proxy: added IPv6 normalization (loopback, IPv4-mapped, bracketed)
 8. Secret guard: expanded detection to 10 new categories (AWS, OAuth, DB, Slack, Stripe, Google, npm, SSH)
 9. ML anomaly detection: added ML-based secret anomaly detection (advisory only, never affects authorization)
+10. Plugin sandboxing: runtime timeout enforcement + worker-thread isolation (fail-safe discard)
 
 ### Release Readiness: CONDITIONALLY READY
 - All critical authorization bypasses fixed
 - 293 tests passing
-- Remaining risks: no runtime plugin sandboxing
+- Remaining risks: no OS-level plugin isolation (seccomp/namespaces)
 
 ## Next Priority (post-audit)
 
-**Runtime plugin sandboxing** — add actual sandboxing (seccomp, namespace isolation) to prevent plugins from accessing unauthorized resources
+**OS-level plugin isolation** — seccomp/namespace-based isolation for plugins that execute untrusted native code (only meaningful once out-of-process plugins are supported)
 
 ## Self-Review Gate (Section 39)
 

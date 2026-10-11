@@ -310,6 +310,7 @@
 | Security Fix 7 | Network Proxy | Added IPv6 normalization (loopback, IPv4-mapped, bracketed) | d1b5305 |
 | Security Fix 8 | Secret Guard | Expanded detection to 10 new categories (AWS, OAuth, DB, Slack, Stripe, Google, npm, SSH) | 6d997f9 |
 | Security Fix 9 | ML Anomaly Detection | Added ML-based secret anomaly detection (advisory only, never affects authorization) | cf1bc08 |
+| Security Fix 10 | Plugin Sandboxing | Runtime plugin sandboxing: bounded timeout, worker-thread isolation, fail-safe discard | 14f33ba |
 
 ### Partially Implemented
 
@@ -319,10 +320,10 @@
 | Policy Conditions | Time/location conditions parse but not yet enforced in evaluate() |
 | Container/WSL/VM/OS Enforcement | Architectural scaffolding only, not real OS-level enforcement |
 | Identity Provider | Placeholder implementation, no real protocol endpoints |
-| Plugin System | Fingerprint verification added, but no runtime sandboxing |
+| Plugin System | Fingerprint verification + runtime timeout sandboxing; no OS-level (seccomp/namespace) isolation |
 | Federated Policy | Ed25519 signatures added, but no key rotation mechanism |
 | Network Proxy | IPv6 normalization added, but no IPv6 policy evaluation |
-| Secret Guard | 18 categories detected, but no ML-based anomaly detection for secrets |
+| Secret Guard | 18 categories detected + ML anomaly scoring for secret patterns (advisory) |
 
 ### Placeholder / Scaffolding Only
 

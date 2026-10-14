@@ -99,7 +99,10 @@ impl McpProxy {
             tool: call.tool.clone(),
             target: call.server.clone().unwrap_or_else(|| "unknown".to_string()),
             args_hash: hash_args(&call.arguments),
-            context: Default::default(),
+            context: agentfence_core::types::Context {
+                session_id: Some(self.config.session_id.clone()),
+                ..Default::default()
+            },
         };
 
         self.pdp.evaluate(&action)

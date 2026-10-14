@@ -68,7 +68,13 @@ impl ShellGateway {
             tool: "shell".to_string(),
             target: cmd.raw.clone(),
             args_hash: hash_args(&cmd.raw),
-            context: Default::default(),
+            context: agentfence_core::types::Context {
+                cwd: std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.to_str().map(String::from)),
+                session_id: Some(session_id.clone()),
+                ..Default::default()
+            },
         };
 
         self.pdp.evaluate(&action)

@@ -116,6 +116,7 @@
 17. Identity providers: OIDC/LDAP/API-key authentication returns explicit errors instead of placeholder identities
 | 18. cargo deny check: added deny.toml with explicit license allowlist (MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0, etc.) |
 | 19. Secret detection: `check_secrets()` now called in `ShellGateway::evaluate()`, `McpProxy::evaluate()`, and `NetworkProxy::evaluate()` — logs warning with secret categories without raw values |
+| 20. Gateway context: `Action.context` now populated with `session_id` and `cwd` (shell) in all gateway `evaluate()` methods |
 
 ### Release Readiness: CONDITIONALLY READY
 - All critical authorization bypasses fixed

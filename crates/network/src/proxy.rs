@@ -200,7 +200,10 @@ impl NetworkProxy {
             tool: "network".to_string(),
             target,
             args_hash: String::new(),
-            context: Default::default(),
+            context: agentfence_core::types::Context {
+                session_id: Some(self.config.session_id.clone()),
+                ..Default::default()
+            },
         };
 
         self.pdp.evaluate(&action)

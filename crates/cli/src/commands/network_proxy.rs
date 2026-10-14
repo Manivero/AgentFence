@@ -39,6 +39,13 @@ pub fn execute(policy_path: &str, listen_addr: &str) {
         audit_store,
         rate_limit: 100,
         pool_size: 10,
+        max_request_line: 8192,
+        max_headers: 100,
+        max_header_size: 16384,
+        max_body_size: 10485760,
+        read_timeout: 30,
+        write_timeout: 30,
+        audit_failure_mode: agentfence_audit::AuditFailureMode::FailClosed,
         pool_timeout: 60,
     };
 

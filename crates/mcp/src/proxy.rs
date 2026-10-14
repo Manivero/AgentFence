@@ -78,6 +78,18 @@ impl McpProxy {
     ///
     /// Returns a decision record with full explanation.
     pub fn evaluate(&self, call: &McpToolCall) -> DecisionRecord {
+        let secrets = self.check_secrets(call);
+        if !secrets.is_empty() {
+            tracing::warn!(
+                "MCP tool call contains {} secret(s): {:?}",
+                secrets.len(),
+                secrets
+                    .iter()
+                    .map(|s| s.category.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+
         let action = Action {
             id: ActionId::new(),
             session_id: self.config.session_id.clone(),
@@ -321,7 +333,7 @@ impl McpProxy {
                                 None,
                                 "mcp",
                                 &call.tool,
-                                format!("{:?}", call.arguments),
+                                redact_args_for_audit(&call.arguments),
                                 hash_args(&call.arguments),
                                 record.decision,
                                 record.risk_level,
@@ -331,7 +343,9 @@ impl McpProxy {
                                 "",
                             );
                             if let Ok(store) = store.lock() {
-                                let _ = store.record_event(&event);
+                                if let Err(e) = store.record_event(&event) {
+                                    error!("Audit write failed: {}", e);
+                                }
                             }
                         }
 
@@ -401,7 +415,7 @@ impl McpProxy {
                                     None,
                                     "mcp",
                                     &request.method,
-                                    format!("{:?}", call.arguments),
+                                    redact_args_for_audit(&call.arguments),
                                     hash_args(&call.arguments),
                                     record.decision,
                                     record.risk_level,
@@ -527,6 +541,29 @@ pub fn hash_args(args: &Value) -> String {
     let mut hasher = Sha256::new();
     hasher.update(json.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+/// Redact sensitive values in MCP tool arguments for audit logging.
+///
+/// Returns a JSON string with all string values replaced by "[REDACTED]"
+/// while preserving the structure. This prevents raw secrets from appearing
+/// in audit logs.
+pub fn redact_args_for_audit(args: &Value) -> String {
+    fn redact(value: &Value) -> Value {
+        match value {
+            Value::String(s) => Value::String(format!("[REDACTED:{}]", s.len())),
+            Value::Object(map) => {
+                let mut obj = serde_json::Map::new();
+                for (k, v) in map {
+                    obj.insert(k.clone(), redact(v));
+                }
+                Value::Object(obj)
+            }
+            Value::Array(arr) => Value::Array(arr.iter().map(redact).collect()),
+            other => other.clone(),
+        }
+    }
+    serde_json::to_string(&redact(args)).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -711,5 +748,54 @@ mcp:
         for secret in &secrets {
             assert!(!secret.fingerprint.contains("ghp_1234567890abcdef"));
         }
+    }
+
+    #[test]
+    fn test_evaluate_detects_secrets_and_returns_decision() {
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let call = McpToolCall {
+            tool: "github.create_issue".to_string(),
+            arguments: serde_json::json!({"token": "ghp_1234567890abcdef"}),
+            server: Some("github".to_string()),
+        };
+        let record = proxy.evaluate(&call);
+        assert!(matches!(record.decision, Decision::Allow | Decision::Deny));
+    }
+
+    #[test]
+    fn test_redact_args_for_audit_redacts_strings() {
+        let args = serde_json::json!({"token": "secret123", "user": "alice"});
+        let redacted = redact_args_for_audit(&args);
+        assert!(redacted.contains("[REDACTED:9]"));
+        assert!(redacted.contains("[REDACTED:5]"));
+        assert!(!redacted.contains("secret123"));
+        assert!(!redacted.contains("alice"));
+    }
+
+    #[test]
+    fn test_redact_args_for_audit_preserves_structure() {
+        let args = serde_json::json!({"nested": {"password": "hunter2"}, "list": ["a", "b"]});
+        let redacted = redact_args_for_audit(&args);
+        assert!(redacted.contains("nested"));
+        assert!(redacted.contains("list"));
+        assert!(redacted.contains("[REDACTED:7]"));
+        assert!(!redacted.contains("hunter2"));
+    }
+
+    #[test]
+    fn test_redact_args_for_audit_empty() {
+        let args = serde_json::json!({});
+        let redacted = redact_args_for_audit(&args);
+        assert_eq!(redacted, "{}");
+    }
+
+    #[test]
+    fn test_redact_args_for_audit_numbers_preserved() {
+        let args = serde_json::json!({"count": 42, "enabled": true, "name": "test"});
+        let redacted = redact_args_for_audit(&args);
+        assert!(redacted.contains("42"));
+        assert!(redacted.contains("true"));
+        assert!(redacted.contains("[REDACTED:4]"));
+        assert!(!redacted.contains("test"));
     }
 }

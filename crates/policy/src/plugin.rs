@@ -504,8 +504,10 @@ mod tests {
     fn test_plugin_timeout() {
         let mut registry = PluginRegistry::new();
         let plugin = Box::new(SlowPlugin);
-        let mut config = PluginConfig::default();
-        config.timeout_ms = 50;
+        let config = PluginConfig {
+            timeout_ms: 50,
+            ..Default::default()
+        };
         registry.register(plugin, config).unwrap();
 
         let context = PluginContext {

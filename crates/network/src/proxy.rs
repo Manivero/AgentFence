@@ -24,6 +24,8 @@ pub struct NetworkRequest {
     pub port: Option<u16>,
     pub protocol: String,
     pub path: Option<String>,
+    pub headers: String,
+    pub body: Vec<u8>,
 }
 
 /// Network proxy configuration.
@@ -40,6 +42,20 @@ pub struct NetworkProxyConfig {
     pub pool_size: u32,
     /// Connection idle timeout in seconds
     pub pool_timeout: u64,
+    /// Maximum request line length in bytes
+    pub max_request_line: usize,
+    /// Maximum header count
+    pub max_headers: usize,
+    /// Maximum total header size in bytes
+    pub max_header_size: usize,
+    /// Maximum request body size in bytes
+    pub max_body_size: usize,
+    /// Read timeout in seconds
+    pub read_timeout: u64,
+    /// Write timeout in seconds
+    pub write_timeout: u64,
+    /// Behavior when audit persistence fails
+    pub audit_failure_mode: agentfence_audit::AuditFailureMode,
 }
 
 /// Connection pool entry.
@@ -112,15 +128,19 @@ pub struct NetworkProxy {
     pdp: Pdp,
     config: NetworkProxyConfig,
     secret_detector: SecretDetector,
+    rate_limiter: std::sync::Arc<std::sync::Mutex<RateLimiter>>,
 }
 
 impl NetworkProxy {
     /// Create a new network proxy with the given PDP and configuration.
     pub fn new(pdp: Pdp, config: NetworkProxyConfig) -> Self {
+        let rate_limiter =
+            std::sync::Arc::new(std::sync::Mutex::new(RateLimiter::new(config.rate_limit)));
         Self {
             pdp,
             config,
             secret_detector: SecretDetector::new(),
+            rate_limiter,
         }
     }
 
@@ -159,6 +179,18 @@ impl NetworkProxy {
             req.path.as_deref().unwrap_or("")
         );
 
+        // Check for secrets in headers and body
+        let header_secrets = self.check_secrets_in_headers(&req.headers);
+        let body_secrets = self.check_secrets_in_body(&req.body);
+        let total_secrets = header_secrets.len() + body_secrets.len();
+        if total_secrets > 0 {
+            tracing::warn!(
+                "Network request contains {} secret(s) in headers, {} in body",
+                header_secrets.len(),
+                body_secrets.len()
+            );
+        }
+
         let action = Action {
             id: ActionId::new(),
             session_id: self.config.session_id.clone(),
@@ -189,14 +221,16 @@ impl NetworkProxy {
 
         let pdp = self.pdp.clone();
         let config = self.config.clone();
+        let rate_limiter = self.rate_limiter.clone();
 
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
                     let pdp = pdp.clone();
                     let config = config.clone();
+                    let rate_limiter = rate_limiter.clone();
                     std::thread::spawn(move || {
-                        if let Err(e) = handle_connection(stream, &pdp, &config) {
+                        if let Err(e) = handle_connection(stream, &pdp, &config, rate_limiter) {
                             error!("Connection error: {}", e);
                         }
                     });
@@ -260,12 +294,22 @@ fn handle_connection(
     mut stream: TcpStream,
     pdp: &Pdp,
     config: &NetworkProxyConfig,
+    rate_limiter: std::sync::Arc<std::sync::Mutex<RateLimiter>>,
 ) -> std::io::Result<()> {
     let audit_store = config.audit_store.clone();
-    let rate_limit = config.rate_limit;
+
+    // Set read/write timeouts
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(config.read_timeout)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(config.write_timeout)))?;
+
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
+
+    // Enforce request line length limit
+    if request_line.len() > config.max_request_line {
+        return Ok(());
+    }
 
     let parts: Vec<&str> = request_line.split_whitespace().collect();
     if parts.len() < 2 {
@@ -275,27 +319,35 @@ fn handle_connection(
     let method = parts[0];
     let url = parts[1];
 
-    // Read headers
+    // Read headers with count and size limits
     let mut headers = String::new();
+    let mut header_count = 0;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line)?;
         if line == "\r\n" || line == "\n" || line.is_empty() {
             break;
         }
+        header_count += 1;
+        if header_count > config.max_headers {
+            return Ok(());
+        }
         headers.push_str(&line);
+        if headers.len() > config.max_header_size {
+            return Ok(());
+        }
     }
 
     // Handle HTTPS CONNECT tunnel
     if method == "CONNECT" {
-        return handle_connect(stream, url, pdp, config);
+        return handle_connect(stream, url, pdp, config, rate_limiter);
     }
 
     // Parse host from URL or Host header
     let (host, port, path) = parse_url(url, &headers);
 
-    // Read request body if Content-Length is present
-    let body = read_request_body(&mut reader, &headers)?;
+    // Read request body with size limit
+    let body = read_request_body(&mut reader, &headers, config.max_body_size)?;
 
     let record = {
         let action = Action {
@@ -332,19 +384,33 @@ fn handle_connection(
             "",
         );
         if let Ok(store) = store.lock() {
-            let _ = store.record_event(&event);
+            if let Err(e) = store.record_event(&event) {
+                error!("Audit write failed: {}", e);
+                if config.audit_failure_mode == agentfence_audit::AuditFailureMode::FailClosed {
+                    let msg = format!("Audit failure (fail-closed): {}", e);
+                    let response = format!(
+                        "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        msg.len(),
+                        msg
+                    );
+                    stream.write_all(response.as_bytes())?;
+                    stream.flush()?;
+                    return Ok(());
+                }
+            }
         }
     }
 
-    // Rate limiting check
-    if rate_limit > 0 {
-        let mut limiter = RateLimiter::new(rate_limit);
+    // Rate limiting check (shared across all connections)
+    {
+        let mut limiter = rate_limiter.lock().unwrap();
         if !limiter.try_consume() {
+            let limit = limiter.max_rps;
             warn!("RATE LIMITED: {} {}", method, url);
             let response = format!(
                 "HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nRate limit exceeded: {} requests per second",
-                format!("Rate limit exceeded: {} requests per second", rate_limit).len(),
-                rate_limit
+                format!("Rate limit exceeded: {} requests per second", limit).len(),
+                limit
             );
             stream.write_all(response.as_bytes())?;
             stream.flush()?;
@@ -394,12 +460,30 @@ fn handle_connect(
     target: &str,
     pdp: &Pdp,
     config: &NetworkProxyConfig,
+    rate_limiter: std::sync::Arc<std::sync::Mutex<RateLimiter>>,
 ) -> std::io::Result<()> {
     let audit_store = config.audit_store.clone();
 
     // Parse host:port from CONNECT target
     let (host, port) = split_host_port(target).unwrap_or((target.to_string(), None));
     let port = port.unwrap_or(443);
+
+    // Rate limiting check (shared across all connections)
+    {
+        let mut limiter = rate_limiter.lock().unwrap();
+        if !limiter.try_consume() {
+            let limit = limiter.max_rps;
+            warn!("RATE LIMITED: CONNECT {}:{}", host, port);
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nRate limit exceeded: {} requests per second",
+                format!("Rate limit exceeded: {} requests per second", limit).len(),
+                limit
+            );
+            stream.write_all(response.as_bytes())?;
+            stream.flush()?;
+            return Ok(());
+        }
+    }
 
     // Evaluate against policy
     let record = {
@@ -437,7 +521,20 @@ fn handle_connect(
             "",
         );
         if let Ok(store) = store.lock() {
-            let _ = store.record_event(&event);
+            if let Err(e) = store.record_event(&event) {
+                error!("Audit write failed: {}", e);
+                if config.audit_failure_mode == agentfence_audit::AuditFailureMode::FailClosed {
+                    let msg = format!("Audit failure (fail-closed): {}", e);
+                    let response = format!(
+                        "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        msg.len(),
+                        msg
+                    );
+                    stream.write_all(response.as_bytes())?;
+                    stream.flush()?;
+                    return Ok(());
+                }
+            }
         }
     }
 
@@ -763,7 +860,11 @@ fn extract_path(url: &str) -> String {
 }
 
 /// Read request body from the stream based on Content-Length header.
-fn read_request_body(reader: &mut BufReader<TcpStream>, headers: &str) -> std::io::Result<Vec<u8>> {
+fn read_request_body(
+    reader: &mut BufReader<TcpStream>,
+    headers: &str,
+    max_body_size: usize,
+) -> std::io::Result<Vec<u8>> {
     let mut content_length: usize = 0;
     for line in headers.lines() {
         if line.to_lowercase().starts_with("content-length:") {
@@ -774,6 +875,16 @@ fn read_request_body(reader: &mut BufReader<TcpStream>, headers: &str) -> std::i
 
     if content_length == 0 {
         return Ok(Vec::new());
+    }
+
+    if content_length > max_body_size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Request body too large: {} bytes (max: {})",
+                content_length, max_body_size
+            ),
+        ));
     }
 
     let mut body = vec![0u8; content_length];
@@ -870,6 +981,13 @@ network:
             rate_limit: 0,
             pool_size: 0,
             pool_timeout: 60,
+            max_request_line: 8192,
+            max_headers: 100,
+            max_header_size: 16384,
+            max_body_size: 10485760,
+            read_timeout: 30,
+            write_timeout: 30,
+            audit_failure_mode: agentfence_audit::AuditFailureMode::FailOpen,
         }
     }
 
@@ -881,6 +999,8 @@ network:
             port: Some(443),
             protocol: "https".to_string(),
             path: Some("/api/v3".to_string()),
+            headers: String::new(),
+            body: Vec::new(),
         };
 
         let record = proxy.evaluate(&req);
@@ -895,6 +1015,8 @@ network:
             port: Some(443),
             protocol: "https".to_string(),
             path: None,
+            headers: String::new(),
+            body: Vec::new(),
         };
 
         let record = proxy.evaluate(&req);
@@ -909,6 +1031,8 @@ network:
             port: Some(443),
             protocol: "https".to_string(),
             path: Some("/api/v3".to_string()),
+            headers: String::new(),
+            body: Vec::new(),
         };
 
         assert!(proxy.is_allowed(&req));
@@ -922,6 +1046,8 @@ network:
             port: Some(443),
             protocol: "https".to_string(),
             path: None,
+            headers: String::new(),
+            body: Vec::new(),
         };
 
         assert!(!proxy.is_allowed(&req));
@@ -1132,6 +1258,8 @@ network:
             port: Some(443),
             protocol: "https".to_string(),
             path: None,
+            headers: String::new(),
+            body: Vec::new(),
         };
         let record = proxy.evaluate(&req);
         assert_eq!(record.decision, Decision::Allow);
@@ -1145,6 +1273,8 @@ network:
             port: Some(443),
             protocol: "https".to_string(),
             path: None,
+            headers: String::new(),
+            body: Vec::new(),
         };
         let record = proxy.evaluate(&req);
         assert_eq!(record.decision, Decision::Deny);
@@ -1286,5 +1416,35 @@ network:
         for secret in &secrets {
             assert!(!secret.fingerprint.contains("ghp_1234567890abcdef"));
         }
+    }
+
+    #[test]
+    fn test_evaluate_detects_secrets_in_headers() {
+        let proxy = NetworkProxy::new(test_pdp(), test_config());
+        let req = NetworkRequest {
+            host: "github.com".to_string(),
+            port: Some(443),
+            protocol: "https".to_string(),
+            path: Some("/api/v3".to_string()),
+            headers: "Authorization: Bearer ghp_1234567890abcdef".to_string(),
+            body: Vec::new(),
+        };
+        let record = proxy.evaluate(&req);
+        assert!(matches!(record.decision, Decision::Allow | Decision::Deny));
+    }
+
+    #[test]
+    fn test_evaluate_detects_secrets_in_body() {
+        let proxy = NetworkProxy::new(test_pdp(), test_config());
+        let req = NetworkRequest {
+            host: "github.com".to_string(),
+            port: Some(443),
+            protocol: "https".to_string(),
+            path: Some("/api/v3".to_string()),
+            headers: String::new(),
+            body: br#"{"token":"ghp_1234567890abcdef"}"#.to_vec(),
+        };
+        let record = proxy.evaluate(&req);
+        assert!(matches!(record.decision, Decision::Allow | Decision::Deny));
     }
 }

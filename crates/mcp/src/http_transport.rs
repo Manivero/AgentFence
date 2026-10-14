@@ -11,12 +11,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use agentfence_core::types::{ActionId, AgentId, SessionId};
 use agentfence_policy::pdp::Pdp;
 
-use crate::proxy::{hash_args, McpProxy, ProxyConfig};
+use crate::proxy::{hash_args, redact_args_for_audit, McpProxy, ProxyConfig};
 use crate::types::{JsonRpcRequest, JsonRpcResponse, ToolsCallParams};
 
 /// HTTP transport configuration.
@@ -29,8 +29,6 @@ pub struct HttpTransportConfig {
     pub proxy_config: ProxyConfig,
     /// Maximum request body size in bytes
     pub max_body_size: usize,
-    /// SSE keep-alive interval in seconds
-    pub sse_keepalive_secs: u64,
 }
 
 /// HTTP MCP transport server.
@@ -196,7 +194,7 @@ fn handle_mcp_post(
                 None,
                 "mcp",
                 &call.tool,
-                format!("{:?}", call.arguments),
+                redact_args_for_audit(&call.arguments),
                 hash_args(&call.arguments),
                 record.decision,
                 record.risk_level,
@@ -255,15 +253,104 @@ fn handle_mcp_post(
     }
 
     // Forward other methods (initialize, tools/list, etc.)
+    // SECURITY: Non-tool-call methods must also be authorized.
+    // Only safe MCP protocol methods are allowed without policy check.
+    let is_safe_method = request.method == "initialize"
+        || request.method == "initialized"
+        || request.method == "ping"
+        || request.method.starts_with("notifications/")
+        || request.method == "tools/list"
+        || request.method == "resources/list"
+        || request.method == "prompts/list";
+
+    if is_safe_method {
+        debug!("Forwarding safe non-tool-call request: {}", request.method);
+        let proxy = McpProxy::new(config.pdp.clone(), config.proxy_config.clone());
+        let response_body = match proxy.forward_non_tool_call(&request) {
+            Ok(result) => {
+                serde_json::to_string(&JsonRpcResponse::success(request.id, result)).unwrap()
+            }
+            Err(e) => {
+                error!("Failed to forward request: {}", e);
+                serde_json::to_string(&JsonRpcResponse::error(
+                    request.id,
+                    crate::types::JsonRpcError::INTERNAL_ERROR,
+                    format!("Internal error: {}", e),
+                ))
+                .unwrap()
+            }
+        };
+        return send_http_response(stream, 200, "OK", &response_body);
+    }
+
+    // Non-safe method: evaluate against policy
     let proxy = McpProxy::new(config.pdp.clone(), config.proxy_config.clone());
-    let response_body = match proxy.forward_non_tool_call(&request) {
-        Ok(result) => serde_json::to_string(&JsonRpcResponse::success(request.id, result)).unwrap(),
-        Err(e) => {
-            error!("Failed to forward request: {}", e);
+    let call = crate::proxy::McpToolCall {
+        tool: request.method.clone(),
+        arguments: request.params.clone().unwrap_or(serde_json::json!({})),
+        server: Some(config.proxy_config.server_name.clone()),
+    };
+    let record = proxy.evaluate(&call);
+
+    // Record audit event
+    if let Some(ref store) = config.proxy_config.audit_store {
+        let event = agentfence_audit::event::AuditEvent::new(
+            config.session_id.clone(),
+            config.agent_id.clone(),
+            None,
+            ActionId::new(),
+            None,
+            "mcp",
+            &call.tool,
+            format!("{:?}", call.arguments),
+            hash_args(&call.arguments),
+            record.decision,
+            record.risk_level,
+            &record.rule_id,
+            &record.policy_version,
+            "",
+            "",
+        );
+        if let Ok(store) = store.lock() {
+            if let Err(e) = store.record_event(&event) {
+                error!("Audit write failed: {}", e);
+            }
+        }
+    }
+
+    let response_body = match record.decision {
+        agentfence_core::types::Decision::Allow => {
+            info!("ALLOWED: {} (rule: {})", call.tool, record.rule_id);
+            match proxy.forward_non_tool_call(&request) {
+                Ok(result) => {
+                    serde_json::to_string(&JsonRpcResponse::success(request.id, result)).unwrap()
+                }
+                Err(e) => {
+                    error!("Failed to forward to MCP server: {}", e);
+                    serde_json::to_string(&JsonRpcResponse::error(
+                        request.id,
+                        crate::types::JsonRpcError::INTERNAL_ERROR,
+                        format!("Internal error: {}", e),
+                    ))
+                    .unwrap()
+                }
+            }
+        }
+        agentfence_core::types::Decision::Deny => {
+            warn!("DENIED: {} (rule: {})", call.tool, record.rule_id);
             serde_json::to_string(&JsonRpcResponse::error(
                 request.id,
-                crate::types::JsonRpcError::INTERNAL_ERROR,
-                format!("Internal error: {}", e),
+                crate::types::JsonRpcError::INVALID_REQUEST,
+                format!("Denied by policy: {}", record.reason),
+            ))
+            .unwrap()
+        }
+        agentfence_core::types::Decision::Ask => {
+            warn!("ASK: {} (rule: {})", call.tool, record.reason);
+            serde_json::to_string(&JsonRpcResponse::error(
+                request.id,
+                crate::types::JsonRpcError::INVALID_REQUEST,
+                format!("Requires approval: {}", record.reason),
             ))
             .unwrap()
         }
@@ -273,29 +360,17 @@ fn handle_mcp_post(
 }
 
 /// Handle SSE stream connection.
-fn handle_sse_stream(stream: &mut TcpStream, config: &HttpTransportConfig) -> std::io::Result<()> {
-    // Send SSE headers
-    let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-    stream.write_all(headers.as_bytes())?;
-    stream.flush()?;
-
-    info!("SSE stream opened");
-
-    // Send keep-alive comments periodically
-    let keepalive = config.sse_keepalive_secs;
-    loop {
-        std::thread::sleep(Duration::from_secs(keepalive));
-        let comment = ": keep-alive\n\n";
-        if stream.write_all(comment.as_bytes()).is_err() {
-            info!("SSE stream closed by client");
-            break;
-        }
-        if stream.flush().is_err() {
-            break;
-        }
-    }
-
-    Ok(())
+///
+/// SSE is NOT implemented — it is explicitly unsupported.
+/// The endpoint returns 501 Not Implemented instead of pretending to work.
+fn handle_sse_stream(stream: &mut TcpStream, _config: &HttpTransportConfig) -> std::io::Result<()> {
+    info!("SSE endpoint hit — SSE is not supported, returning 501");
+    send_http_response(
+        stream,
+        501,
+        "Not Implemented",
+        r#"{"error":"SSE transport is not supported. Use POST /mcp instead."}"#,
+    )
 }
 
 /// Send HTTP response with JSON body.
@@ -363,7 +438,6 @@ mcp:
             pdp: test_pdp(),
             proxy_config: test_proxy_config(),
             max_body_size: 1024 * 1024,
-            sse_keepalive_secs: 15,
         };
         let transport = HttpTransport::new(config);
         assert_eq!(transport.config.listen_addr, "127.0.0.1:0");

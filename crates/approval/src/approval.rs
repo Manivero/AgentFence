@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use uuid::Uuid;
 
 use agentfence_core::error::{AgentFenceError, Result};
@@ -136,16 +137,184 @@ impl ApprovalRecord {
 ///
 /// Manages approval records and validates them.
 /// The agent must never be able to create or forge approvals.
+///
+/// Supports both in-memory and persistent (SQLite) storage.
 pub struct ApprovalService {
     approvals: Arc<Mutex<HashMap<String, ApprovalRecord>>>,
+    db_path: Option<std::path::PathBuf>,
 }
 
 impl ApprovalService {
-    /// Create a new approval service.
+    /// Create a new in-memory approval service.
     pub fn new() -> Self {
         Self {
             approvals: Arc::new(Mutex::new(HashMap::new())),
+            db_path: None,
         }
+    }
+
+    /// Create a new persistent approval service backed by SQLite.
+    pub fn new_with_db(db_path: std::path::PathBuf) -> Result<Self> {
+        let service = Self {
+            approvals: Arc::new(Mutex::new(HashMap::new())),
+            db_path: Some(db_path),
+        };
+        service.init_db()?;
+        Ok(service)
+    }
+
+    /// Initialize the approvals table in SQLite.
+    fn init_db(&self) -> Result<()> {
+        let Some(path) = &self.db_path else {
+            return Ok(());
+        };
+        let conn = rusqlite::Connection::open(path)?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS approvals (
+                approval_id TEXT PRIMARY KEY,
+                action_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                scope_value TEXT,
+                issued_at TEXT NOT NULL,
+                expires_at TEXT,
+                decision TEXT NOT NULL,
+                policy_version TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_approvals_action ON approvals(action_id);
+            CREATE INDEX IF NOT EXISTS idx_approvals_session ON approvals(session_id);",
+        )?;
+        Ok(())
+    }
+
+    /// Get the database path if persistent storage is enabled.
+    pub fn db_path(&self) -> Option<&std::path::PathBuf> {
+        self.db_path.as_ref()
+    }
+
+    /// Check if persistent storage is enabled.
+    pub fn is_persistent(&self) -> bool {
+        self.db_path.is_some()
+    }
+
+    /// List all pending (undecided) approvals.
+    pub fn list_pending(&self) -> Vec<ApprovalRecord> {
+        let approvals = self.approvals.lock().unwrap();
+        approvals
+            .values()
+            .filter(|r| r.decision == Decision::Ask)
+            .cloned()
+            .collect()
+    }
+
+    /// Get approval by action_id (returns first pending match).
+    pub fn get_by_action_id(&self, action_id: &str) -> Option<ApprovalRecord> {
+        let approvals = self.approvals.lock().unwrap();
+        approvals
+            .values()
+            .find(|r| r.action_id.0 == action_id && r.decision == Decision::Ask)
+            .cloned()
+    }
+
+    /// Load all approvals from SQLite into memory.
+    pub fn load_from_db(&self) -> Result<()> {
+        let Some(path) = &self.db_path else {
+            return Ok(());
+        };
+        let conn = rusqlite::Connection::open(path)?;
+        let mut stmt = conn.prepare(
+            "SELECT approval_id, action_id, session_id, scope, scope_value,
+                    issued_at, expires_at, decision, policy_version
+             FROM approvals",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let scope_str: String = row.get(3)?;
+            let scope = match scope_str.as_str() {
+                "Once" => ApprovalScope::Once,
+                "Session" => ApprovalScope::Session,
+                "Repository" => ApprovalScope::Repository,
+                "Path" => ApprovalScope::Path,
+                "Host" => ApprovalScope::Host,
+                _ => ApprovalScope::Once,
+            };
+            let decision_str: String = row.get(7)?;
+            let decision = match decision_str.as_str() {
+                "Allow" => Decision::Allow,
+                "Deny" => Decision::Deny,
+                _ => Decision::Ask,
+            };
+            let issued_at_str: String = row.get(5)?;
+            let issued_at = chrono::DateTime::parse_from_rfc3339(&issued_at_str)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now());
+            let expires_at: Option<String> = row.get(6)?;
+            let expires_at = expires_at.and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(&s)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+            });
+            Ok(ApprovalRecord {
+                approval_id: row.get(0)?,
+                action_id: ActionId(row.get(1)?),
+                session_id: SessionId::new_from_string(row.get(2)?),
+                scope,
+                issued_at,
+                expires_at,
+                decision,
+                policy_version: row.get(8)?,
+            })
+        })?;
+        let mut approvals = self.approvals.lock().unwrap();
+        for row in rows {
+            let record = row?;
+            approvals.insert(record.approval_id.clone(), record);
+        }
+        Ok(())
+    }
+
+    /// Save an approval record to SQLite.
+    fn save_to_db(&self, record: &ApprovalRecord) -> Result<()> {
+        let Some(path) = &self.db_path else {
+            return Ok(());
+        };
+        let conn = rusqlite::Connection::open(path)?;
+        let scope_str = match &record.scope {
+            ApprovalScope::Once => "Once",
+            ApprovalScope::Session => "Session",
+            ApprovalScope::Repository => "Repository",
+            ApprovalScope::Path => "Path",
+            ApprovalScope::Host => "Host",
+            ApprovalScope::Expiry(_) => "Once",
+        };
+        let scope_value = match &record.scope {
+            ApprovalScope::Repository | ApprovalScope::Path | ApprovalScope::Host => {
+                record.extract_scope_value()
+            }
+            _ => String::new(),
+        };
+        let decision_str = match record.decision {
+            Decision::Allow => "Allow",
+            Decision::Deny => "Deny",
+            Decision::Ask => "Ask",
+        };
+        conn.execute(
+            "INSERT OR REPLACE INTO approvals (
+                approval_id, action_id, session_id, scope, scope_value,
+                issued_at, expires_at, decision, policy_version
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                record.approval_id,
+                record.action_id.0,
+                record.session_id.0,
+                scope_str,
+                scope_value,
+                record.issued_at.to_rfc3339(),
+                record.expires_at.map(|t| t.to_rfc3339()),
+                decision_str,
+                record.policy_version,
+            ],
+        )?;
+        Ok(())
     }
 
     /// Request approval for an action.
@@ -177,6 +346,12 @@ impl ApprovalService {
 
         let mut approvals = self.approvals.lock().unwrap();
         approvals.insert(record.approval_id.clone(), record.clone());
+        drop(approvals);
+
+        // Persist to SQLite if enabled
+        if let Err(e) = self.save_to_db(&record) {
+            warn!("Failed to persist approval to DB: {}", e);
+        }
 
         Ok(record)
     }
@@ -208,7 +383,15 @@ impl ApprovalService {
         }
 
         record.decision = Decision::Allow;
-        Ok(record.clone())
+        let updated = record.clone();
+        drop(approvals);
+
+        // Persist decision to SQLite if enabled
+        if let Err(e) = self.save_to_db(&updated) {
+            warn!("Failed to persist approval decision to DB: {}", e);
+        }
+
+        Ok(updated)
     }
 
     /// Deny an action.
@@ -231,7 +414,15 @@ impl ApprovalService {
         }
 
         record.decision = Decision::Deny;
-        Ok(record.clone())
+        let updated = record.clone();
+        drop(approvals);
+
+        // Persist decision to SQLite if enabled
+        if let Err(e) = self.save_to_db(&updated) {
+            warn!("Failed to persist approval decision to DB: {}", e);
+        }
+
+        Ok(updated)
     }
 
     /// Validate an approval for an action.
@@ -477,6 +668,64 @@ mod tests {
             )
             .unwrap();
         assert!(record.matches(&action_id, &session_id));
+    }
+
+    #[test]
+    fn test_persistent_approval_roundtrip() {
+        let db_path = std::env::temp_dir().join(format!("af_approval_{}.db", uuid::Uuid::new_v4()));
+        let service = ApprovalService::new_with_db(db_path.clone()).unwrap();
+        let action_id = ActionId::new();
+        let session_id = SessionId::new();
+
+        // Create and approve
+        let record = service
+            .request_approval(
+                action_id.clone(),
+                session_id.clone(),
+                ApprovalScope::Once,
+                "v1",
+            )
+            .unwrap();
+        service.approve(&record.approval_id).unwrap();
+
+        // Create a new service instance (simulating process restart)
+        let service2 = ApprovalService::new_with_db(db_path.clone()).unwrap();
+        service2.load_from_db().unwrap();
+
+        // Should find the approved record
+        let validated = service2.validate(&action_id, &session_id);
+        assert!(validated.is_some());
+        assert_eq!(validated.unwrap().decision, Decision::Allow);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_persistent_list_pending() {
+        let db_path = std::env::temp_dir().join(format!("af_approval_{}.db", uuid::Uuid::new_v4()));
+        let service = ApprovalService::new_with_db(db_path.clone()).unwrap();
+        let action_id = ActionId::new();
+        let session_id = SessionId::new();
+
+        // Create pending approval
+        service
+            .request_approval(
+                action_id.clone(),
+                session_id.clone(),
+                ApprovalScope::Once,
+                "v1",
+            )
+            .unwrap();
+
+        // New instance, load from DB
+        let service2 = ApprovalService::new_with_db(db_path.clone()).unwrap();
+        service2.load_from_db().unwrap();
+
+        let pending = service2.list_pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].action_id, action_id);
+
+        let _ = std::fs::remove_file(&db_path);
     }
 
     #[test]

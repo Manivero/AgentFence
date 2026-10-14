@@ -443,11 +443,12 @@ fn evaluate_network(policy: &Policy, action: &Action) -> DecisionRecord {
         None => return DecisionRecord::deny("network.default", "No network policy defined"),
     };
 
-    let host = &action.target;
+    // Extract hostname from target (may be a full URL, host:port, or bare host).
+    let target_host = extract_hostname(&action.target);
 
     // Check deny list
     for denied in &network.deny {
-        if host.contains(denied.as_str()) {
+        if host_matches(denied, &target_host) {
             return DecisionRecord::deny(
                 "network.deny",
                 format!("Host matches denied pattern: {}", denied),
@@ -457,7 +458,7 @@ fn evaluate_network(policy: &Policy, action: &Action) -> DecisionRecord {
 
     // Check ask list
     for asked in &network.ask {
-        if host.contains(asked.as_str()) {
+        if host_matches(asked, &target_host) {
             return DecisionRecord::ask(
                 "network.ask",
                 format!("Host requires approval: {}", asked),
@@ -467,7 +468,7 @@ fn evaluate_network(policy: &Policy, action: &Action) -> DecisionRecord {
 
     // Check allow list
     for allowed in &network.allow {
-        if host.contains(allowed.as_str()) {
+        if host_matches(allowed, &target_host) {
             // SECURITY: conditions must hold for an allow rule to apply (fail-closed).
             if !conditions_ok(network.conditions.as_ref(), &action.context) {
                 return DecisionRecord::deny(
@@ -487,6 +488,150 @@ fn evaluate_network(policy: &Policy, action: &Action) -> DecisionRecord {
         Decision::Deny => DecisionRecord::deny("network.default", "Default deny"),
         Decision::Ask => DecisionRecord::ask("network.default", "Default ask"),
     }
+}
+
+/// Extract a bare hostname from a target string.
+///
+/// Accepts full URLs (`https://host/path`), `host:port`, or bare hostnames.
+/// Returns the hostname portion (lowercase, no port, no path).
+fn extract_hostname(target: &str) -> String {
+    let s = target.trim();
+    // Strip scheme if present (case-insensitive).
+    let lower = s.to_lowercase();
+    let after_scheme = if let Some(rest) = lower.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = lower.strip_prefix("http://") {
+        rest
+    } else {
+        s
+    };
+    // Strip path (first '/' after host).
+    let host_part = match after_scheme.find('/') {
+        Some(i) => &after_scheme[..i],
+        None => after_scheme,
+    };
+    // Strip port.
+    let host = strip_port(host_part);
+    host.to_lowercase()
+}
+
+/// Remove the port portion from a `host:port` or `[v6]:port` string.
+fn strip_port(host: &str) -> &str {
+    if host.starts_with('[') {
+        // Bracketed IPv6: [::1]:8080 -> ::1
+        if let Some(end) = host.find(']') {
+            return &host[1..end];
+        }
+    }
+    // Count colons to distinguish bare IPv6 from host:port.
+    let colon_count = host.matches(':').count();
+    if colon_count == 1 {
+        // host:port
+        return host.split(':').next().unwrap_or(host);
+    }
+    host
+}
+
+/// Check whether a policy pattern matches a target hostname.
+///
+/// Supported syntax:
+/// - `github.com` — exact hostname match only
+/// - `.github.com` or `*.github.com` — matches domain and all subdomains
+/// - `192.168.1.10` — exact IPv4 match
+/// - `192.168.1.0/24` — IPv4 CIDR block
+/// - `::1` — exact IPv6 match
+/// - `[::1]` — bracketed IPv6 (brackets stripped before comparison)
+fn host_matches(pattern: &str, target: &str) -> bool {
+    let pat = pattern.trim();
+    let tgt = target.trim().to_lowercase();
+    // Strip brackets from bracketed IPv6 targets and patterns.
+    let tgt = tgt
+        .strip_prefix('[')
+        .and_then(|t| t.strip_suffix(']'))
+        .unwrap_or(&tgt);
+    let pat = pat
+        .strip_prefix('[')
+        .and_then(|p| p.strip_suffix(']'))
+        .unwrap_or(pat);
+
+    // CIDR notation
+    if pat.contains('/') {
+        return cidr_matches(pat, tgt);
+    }
+
+    // Subdomain wildcard: .github.com matches domain + subdomains
+    if let Some(domain) = pat.strip_prefix('.') {
+        return subdomain_matches(domain, tgt);
+    }
+    // *.github.com matches only subdomains (not the bare domain)
+    if let Some(domain) = pat.strip_prefix('*').and_then(|d| d.strip_prefix('.')) {
+        return tgt.ends_with(&format!(".{}", domain.to_lowercase()));
+    }
+
+    // Exact match
+    pat.eq_ignore_ascii_case(tgt)
+}
+
+/// Match `target` as `domain` or any subdomain of `domain`.
+fn subdomain_matches(domain: &str, target: &str) -> bool {
+    let d = domain.to_lowercase();
+    if target == d {
+        return true;
+    }
+    target.ends_with(&format!(".{}", d))
+}
+
+/// Check whether `target` (IPv4 or IPv6) falls within a CIDR block.
+fn cidr_matches(pattern: &str, target: &str) -> bool {
+    let parts: Vec<&str> = pattern.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let Ok(prefix) = parts[1].parse::<u8>() else {
+        return false;
+    };
+
+    // Try IPv4 first.
+    if let (Ok(net), Ok(ip)) = (
+        parts[0].parse::<std::net::Ipv4Addr>(),
+        target.parse::<std::net::Ipv4Addr>(),
+    ) {
+        return ipv4_in_cidr(net, ip, prefix);
+    }
+
+    // Try IPv6.
+    if let (Ok(net), Ok(ip)) = (
+        parts[0].parse::<std::net::Ipv6Addr>(),
+        target.parse::<std::net::Ipv6Addr>(),
+    ) {
+        return ipv6_in_cidr(net, ip, prefix);
+    }
+
+    false
+}
+
+fn ipv4_in_cidr(net: std::net::Ipv4Addr, ip: std::net::Ipv4Addr, prefix: u8) -> bool {
+    if prefix > 32 {
+        return false;
+    }
+    let mask = if prefix == 0 {
+        0u32
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    (net.to_bits() & mask) == (ip.to_bits() & mask)
+}
+
+fn ipv6_in_cidr(net: std::net::Ipv6Addr, ip: std::net::Ipv6Addr, prefix: u8) -> bool {
+    if prefix > 128 {
+        return false;
+    }
+    let mask = if prefix == 0 {
+        u128::MIN
+    } else {
+        u128::MAX << (128 - prefix)
+    };
+    (net.to_bits() & mask) == (ip.to_bits() & mask)
 }
 
 fn evaluate_filesystem(policy: &Policy, action: &Action) -> DecisionRecord {
@@ -898,7 +1043,7 @@ network:
     - npmjs.org
 "#;
         let policy = parse_policy(yaml).unwrap();
-        let action = test_action(ActionType::Network, "network", "registry.npmjs.org");
+        let action = test_action(ActionType::Network, "network", "npmjs.org");
         let record = evaluate(&policy, &action);
         assert_eq!(record.decision, Decision::Ask);
         assert_eq!(record.rule_id, "network.ask");
@@ -974,6 +1119,221 @@ shell:
         let policy = parse_policy(yaml).unwrap();
         let shell = policy.shell.as_ref().unwrap();
         assert!(shell.conditions.is_none());
+    }
+
+    // ─── Host matching (exact, subdomain, CIDR, IPv6) ───────────────────────
+
+    #[test]
+    fn test_host_exact_match() {
+        assert!(host_matches("github.com", "github.com"));
+        assert!(!host_matches("github.com", "evilgithub.com"));
+        assert!(!host_matches("github.com", "github.com.attacker.example"));
+        assert!(!host_matches("github.com", "api.github.com"));
+    }
+
+    #[test]
+    fn test_host_subdomain_wildcard() {
+        assert!(host_matches(".github.com", "github.com"));
+        assert!(host_matches(".github.com", "api.github.com"));
+        assert!(host_matches(".github.com", "deep.sub.github.com"));
+        assert!(!host_matches(".github.com", "evilgithub.com"));
+        assert!(!host_matches(".github.com", "github.com.evil.example"));
+
+        assert!(host_matches("*.github.com", "api.github.com"));
+        assert!(!host_matches("*.github.com", "github.com"));
+    }
+
+    #[test]
+    fn test_host_case_insensitive() {
+        assert!(host_matches("GitHub.COM", "github.com"));
+        assert!(host_matches("github.com", "GITHUB.COM"));
+    }
+
+    #[test]
+    fn test_host_ipv4_exact() {
+        assert!(host_matches("192.168.1.10", "192.168.1.10"));
+        assert!(!host_matches("192.168.1.10", "192.168.1.11"));
+    }
+
+    #[test]
+    fn test_host_ipv4_cidr() {
+        assert!(host_matches("192.168.1.0/24", "192.168.1.10"));
+        assert!(host_matches("192.168.1.0/24", "192.168.1.255"));
+        assert!(!host_matches("192.168.1.0/24", "192.168.2.1"));
+        assert!(host_matches("10.0.0.0/8", "10.255.255.255"));
+        assert!(!host_matches("10.0.0.0/8", "11.0.0.1"));
+        assert!(host_matches("0.0.0.0/0", "203.0.113.5"));
+    }
+
+    #[test]
+    fn test_host_ipv6_exact() {
+        assert!(host_matches("::1", "::1"));
+        assert!(host_matches("[::1]", "::1"));
+        assert!(!host_matches("::1", "::2"));
+    }
+
+    #[test]
+    fn test_host_ipv6_cidr() {
+        assert!(host_matches("fd00::/8", "fd12:3456::1"));
+        assert!(!host_matches("fd00::/8", "fe80::1"));
+    }
+
+    #[test]
+    fn test_extract_hostname_from_url() {
+        assert_eq!(
+            extract_hostname("https://github.com/user/repo"),
+            "github.com"
+        );
+        assert_eq!(
+            extract_hostname("http://api.github.com:8080/v3"),
+            "api.github.com"
+        );
+        assert_eq!(extract_hostname("github.com"), "github.com");
+        assert_eq!(extract_hostname("github.com:443"), "github.com");
+        assert_eq!(extract_hostname("[::1]:8080"), "::1");
+        assert_eq!(extract_hostname("HTTPS://GitHub.COM/Path"), "github.com");
+    }
+
+    #[test]
+    fn test_network_policy_exact_host_allows_correct_host() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - github.com
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Network, "http", "https://github.com/user/repo");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_network_policy_exact_host_rejects_lookalike() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - github.com
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        // evilgithub.com must NOT match allow: github.com
+        let action = test_action(ActionType::Network, "http", "https://evilgithub.com/");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn test_network_policy_exact_host_rejects_subdomain_attack() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - github.com
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(
+            ActionType::Network,
+            "http",
+            "https://github.com.attacker.example/",
+        );
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn test_network_policy_subdomain_wildcard_allows_subdomain() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - ".github.com"
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Network, "http", "https://api.github.com/v3");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_network_policy_deny_takes_precedence_over_allow() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  deny:
+    - evil.com
+  allow:
+    - ".example.com"
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        // evil.com matches deny even though .example.com would allow subdomains
+        let action = test_action(ActionType::Network, "http", "https://evil.com/");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "network.deny");
+    }
+
+    #[test]
+    fn test_network_policy_cidr_allow() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - "10.0.0.0/8"
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Network, "http", "http://10.1.2.3/api");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_network_policy_cidr_rejects_outside_range() {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - "10.0.0.0/8"
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Network, "http", "http://11.0.0.1/api");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Deny);
     }
 
     // ─── Condition enforcement (fail-closed) ────────────────────────────────
@@ -1054,8 +1414,10 @@ shell:
             allowed_ips: vec!["192.168.1.0/24".to_string()],
             allowed_hosts: vec![],
         };
-        let mut ctx = Context::default();
-        ctx.env_metadata = Some(serde_json::json!({"client_ip": "192.168.1.55"}));
+        let mut ctx = Context {
+            env_metadata: Some(serde_json::json!({"client_ip": "192.168.1.55"})),
+            ..Default::default()
+        };
         assert!(location_condition_satisfied(&cond, &ctx));
 
         ctx.env_metadata = Some(serde_json::json!({"client_ip": "10.0.0.1"}));
@@ -1142,8 +1504,10 @@ network:
         - "192.168.1.0/24"
 "#;
         let policy = parse_policy(yaml).unwrap();
-        let mut ctx = Context::default();
-        ctx.env_metadata = Some(serde_json::json!({"client_ip": "192.168.1.10"}));
+        let ctx = Context {
+            env_metadata: Some(serde_json::json!({"client_ip": "192.168.1.10"})),
+            ..Default::default()
+        };
         let action = action_with_context(ActionType::Network, "http", "https://github.com/x", ctx);
         let record = evaluate(&policy, &action);
         assert_eq!(record.decision, Decision::Allow);

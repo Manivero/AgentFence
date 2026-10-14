@@ -312,6 +312,8 @@
 | Security Fix 9 | ML Anomaly Detection | Added ML-based secret anomaly detection (advisory only, never affects authorization) | cf1bc08 |
 | Security Fix 10 | Plugin Sandboxing | Runtime plugin sandboxing: bounded timeout, worker-thread isolation, fail-safe discard | 14f33ba |
 | Security Fix 11 | Policy Conditions | Time/location conditions now ENFORCED in evaluation (fail-closed); previously parsed but ignored | c0be1db |
+| Security Fix 12 | Network Host Matching | Replaced substring `contains()` with exact/subdomain/CIDR/IPv6 matching; `allow: github.com` no longer authorizes `evilgithub.com` | (working tree) |
+| Security Fix 13 | Audit get_all_events | SQL now selects `prev_hash` and `current_hash` columns that were being read but not selected | (working tree) |
 
 ### Partially Implemented
 

@@ -52,7 +52,6 @@ pub fn execute(server: &str, policy_path: &str, listen_addr: &str) {
         pdp,
         proxy_config,
         max_body_size: 1024 * 1024, // 1MB
-        sse_keepalive_secs: 15,
     };
 
     let transport = HttpTransport::new(config);

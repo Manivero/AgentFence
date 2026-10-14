@@ -160,7 +160,8 @@ fn main() {
             commands::init::execute(&output);
         }
         Commands::Run { policy, agent } => {
-            commands::run::execute(&policy, &agent);
+            let code = commands::run::execute(&policy, &agent);
+            std::process::exit(code);
         }
         Commands::Mcp { command } => match command {
             McpCommands::Proxy { server, policy } => {

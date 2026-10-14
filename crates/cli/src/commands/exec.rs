@@ -5,7 +5,7 @@ use std::process::Command;
 use agentfence_core::types::{ActionId, AgentId, Decision, SessionId};
 use agentfence_policy::{parser::load_policy, pdp::Pdp};
 use agentfence_shell::{command::ShellCommand, gateway::ShellGateway};
-use tracing::info;
+use tracing::{error, info};
 
 use super::db;
 
@@ -64,7 +64,9 @@ pub fn execute(policy_path: &str, command: &[String]) {
             "",
             "",
         );
-        let _ = store.record_event(&event);
+        if let Err(e) = store.record_event(&event) {
+            error!("Audit write failed: {}", e);
+        }
     }
 
     match record.decision {

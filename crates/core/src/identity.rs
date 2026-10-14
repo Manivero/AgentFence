@@ -17,7 +17,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::info;
 
 /// Identity provider type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,44 +161,38 @@ impl IdentityProvider {
     }
 
     /// Authenticate via OIDC.
+    ///
+    /// SECURITY: This method is NOT implemented. It returns an error instead
+    /// of a placeholder token. A real implementation must:
+    /// 1. Send username/password to the OIDC token endpoint
+    /// 2. Receive and validate the token response (JWT signature, issuer, audience, expiry)
+    /// 3. Return the identity token
     async fn authenticate_oidc(
         &self,
         _username: &str,
         _password: &str,
     ) -> Result<IdentityToken, String> {
-        // In a real implementation, this would:
-        // 1. Send username/password to the OIDC token endpoint
-        // 2. Receive and validate the token response
-        // 3. Return the identity token
-        info!("OIDC authentication for user: {}", _username);
-        Ok(IdentityToken {
-            access_token: "oidc_token_placeholder".to_string(),
-            refresh_token: Some("refresh_token_placeholder".to_string()),
-            token_type: "Bearer".to_string(),
-            expires_in: self.config.token_expiration_secs,
-            scope: Some("openid profile email".to_string()),
-        })
+        let _ = _username;
+        let _ = _password;
+        Err("OIDC authentication is not implemented. Configure a real OIDC provider with issuer_url, client_id, and client_secret.".to_string())
     }
 
     /// Authenticate via LDAP.
+    ///
+    /// SECURITY: This method is NOT implemented. It returns an error instead
+    /// of a placeholder token. A real implementation must:
+    /// 1. Connect to the LDAP server
+    /// 2. Bind with the user's credentials
+    /// 3. Search for the user's groups/roles
+    /// 4. Return the identity token
     async fn authenticate_ldap(
         &self,
         _username: &str,
         _password: &str,
     ) -> Result<IdentityToken, String> {
-        // In a real implementation, this would:
-        // 1. Connect to the LDAP server
-        // 2. Bind with the user's credentials
-        // 3. Search for the user's groups/roles
-        // 4. Return the identity token
-        info!("LDAP authentication for user: {}", _username);
-        Ok(IdentityToken {
-            access_token: "ldap_token_placeholder".to_string(),
-            refresh_token: None,
-            token_type: "Bearer".to_string(),
-            expires_in: self.config.token_expiration_secs,
-            scope: None,
-        })
+        let _ = _username;
+        let _ = _password;
+        Err("LDAP authentication is not implemented. Configure a real LDAP provider with ldap_url and ldap_base_dn.".to_string())
     }
 
     /// Validate an access token.
@@ -213,46 +206,27 @@ impl IdentityProvider {
     }
 
     /// Validate an OIDC token.
+    ///
+    /// SECURITY: This method is NOT implemented. It returns an error instead
+    /// of a placeholder identity. A real implementation must:
+    /// 1. Decode and validate the JWT (signature, issuer, audience, expiry)
+    /// 2. Extract claims from the validated token
+    /// 3. Return the identity bound to the token's claims
     async fn validate_oidc_token(&self, _token: &str) -> Result<Identity, String> {
-        // In a real implementation, this would:
-        // 1. Decode and validate the JWT
-        // 2. Verify the signature
-        // 3. Check expiration
-        // 4. Extract claims
-        info!("Validating OIDC token");
-        Ok(Identity {
-            user_id: "user123".to_string(),
-            email: "user@example.com".to_string(),
-            display_name: "Test User".to_string(),
-            roles: vec!["user".to_string()],
-            provider: self.config.name.clone(),
-            authenticated_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: (chrono::Utc::now()
-                + chrono::Duration::seconds(self.config.token_expiration_secs as i64))
-            .to_rfc3339(),
-            claims: HashMap::new(),
-        })
+        let _ = _token;
+        Err("OIDC token validation is not implemented. A real implementation must validate JWT signature, issuer, audience, and expiry.".to_string())
     }
 
     /// Validate an API key.
+    ///
+    /// SECURITY: This method is NOT implemented. It returns an error instead
+    /// of a placeholder identity. A real implementation must:
+    /// 1. Look up the API key in the database
+    /// 2. Check if it's active and not expired
+    /// 3. Return the associated identity
     async fn validate_api_key(&self, _token: &str) -> Result<Identity, String> {
-        // In a real implementation, this would:
-        // 1. Look up the API key in the database
-        // 2. Check if it's active and not expired
-        // 3. Return the associated identity
-        info!("Validating API key");
-        Ok(Identity {
-            user_id: "api_user".to_string(),
-            email: "api@example.com".to_string(),
-            display_name: "API User".to_string(),
-            roles: vec!["api".to_string()],
-            provider: self.config.name.clone(),
-            authenticated_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: (chrono::Utc::now()
-                + chrono::Duration::seconds(self.config.token_expiration_secs as i64))
-            .to_rfc3339(),
-            claims: HashMap::new(),
-        })
+        let _ = _token;
+        Err("API key validation is not implemented. A real implementation must verify the key against a secure store.".to_string())
     }
 
     /// Check if a role is allowed.
@@ -305,8 +279,10 @@ mod tests {
 
     #[test]
     fn test_role_allowed_specific() {
-        let mut config = IdentityProviderConfig::default();
-        config.allowed_roles = vec!["admin".to_string(), "user".to_string()];
+        let config = IdentityProviderConfig {
+            allowed_roles: vec!["admin".to_string(), "user".to_string()],
+            ..Default::default()
+        };
         let provider = IdentityProvider::new(config);
         assert!(provider.is_role_allowed("admin"));
         assert!(provider.is_role_allowed("user"));
@@ -340,5 +316,81 @@ mod tests {
         };
         assert_eq!(identity.user_id, "user1");
         assert_eq!(identity.roles.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_oidc_authenticate_returns_error_not_placeholder() {
+        let config = IdentityProviderConfig::default();
+        let provider = IdentityProvider::new(config);
+        let result = provider.authenticate("any_user", "any_password").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not implemented"),
+            "Error should mention not implemented: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ldap_authenticate_returns_error_not_placeholder() {
+        let config = IdentityProviderConfig {
+            provider_type: IdentityProviderType::Ldap,
+            ldap_url: Some("ldap://localhost".to_string()),
+            ldap_base_dn: Some("dc=example,dc=com".to_string()),
+            ..Default::default()
+        };
+        let provider = IdentityProvider::new(config);
+        let result = provider.authenticate("any_user", "any_password").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not implemented"),
+            "Error should mention not implemented: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_oidc_validate_token_returns_error_not_placeholder() {
+        let config = IdentityProviderConfig::default();
+        let provider = IdentityProvider::new(config);
+        let result = provider.validate_token("any_token").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not implemented"),
+            "Error should mention not implemented: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_api_key_validate_token_returns_error_not_placeholder() {
+        let config = IdentityProviderConfig {
+            provider_type: IdentityProviderType::ApiKey,
+            api_key_header: Some("X-API-Key".to_string()),
+            ..Default::default()
+        };
+        let provider = IdentityProvider::new(config);
+        let result = provider.validate_token("any_key").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not implemented"),
+            "Error should mention not implemented: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_saml_authenticate_returns_error() {
+        let config = IdentityProviderConfig {
+            provider_type: IdentityProviderType::Saml,
+            ..Default::default()
+        };
+        let provider = IdentityProvider::new(config);
+        let result = provider.authenticate("any_user", "any_password").await;
+        assert!(result.is_err());
     }
 }

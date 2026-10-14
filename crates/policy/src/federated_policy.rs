@@ -273,27 +273,40 @@ impl FederatedPolicyDistributor {
     }
 
     /// Resolve conflict between local and remote versions.
+    ///
+    /// Returns an error if ConflictResolution::Fail is configured and a
+    /// conflict is detected (versions differ).
     pub fn resolve_conflict(
         &self,
         local: &FederatedPolicyVersion,
         remote: &FederatedPolicyVersion,
-    ) -> FederatedPolicyVersion {
+    ) -> Result<FederatedPolicyVersion, String> {
+        // Detect conflict: different versions with different hashes
+        let conflict = local.version != remote.version && local.policy_hash != remote.policy_hash;
+
         match self.config.conflict_resolution {
             ConflictResolution::HighestVersion => {
                 if remote.version > local.version {
-                    remote.clone()
+                    Ok(remote.clone())
                 } else {
-                    local.clone()
+                    Ok(local.clone())
                 }
             }
-            ConflictResolution::Local => local.clone(),
-            ConflictResolution::Remote => remote.clone(),
+            ConflictResolution::Local => Ok(local.clone()),
+            ConflictResolution::Remote => Ok(remote.clone()),
             ConflictResolution::Fail => {
-                warn!(
-                    "Policy conflict detected: local={}, remote={}",
-                    local.version, remote.version
-                );
-                local.clone()
+                if conflict {
+                    warn!(
+                        "Policy conflict detected: local=v{}, remote=v{} — failing",
+                        local.version, remote.version
+                    );
+                    Err(format!(
+                        "Policy conflict: local=v{} remote=v{} (ConflictResolution::Fail)",
+                        local.version, remote.version
+                    ))
+                } else {
+                    Ok(local.clone())
+                }
             }
         }
     }
@@ -602,8 +615,69 @@ mod tests {
             signature: None,
         };
 
-        let resolved = distributor.resolve_conflict(&local, &remote);
+        let resolved = distributor.resolve_conflict(&local, &remote).unwrap();
         assert_eq!(resolved.version, 2);
+    }
+
+    #[test]
+    fn test_conflict_resolution_fail_returns_error() {
+        let config = FederatedPolicyConfig {
+            conflict_resolution: ConflictResolution::Fail,
+            ..Default::default()
+        };
+        let distributor = FederatedPolicyDistributor::new(config);
+
+        let local = FederatedPolicyVersion {
+            version: 1,
+            policy_hash: "aaa".to_string(),
+            timestamp: "2026-10-05T12:00:00Z".to_string(),
+            source: "local".to_string(),
+            signature: None,
+        };
+        let remote = FederatedPolicyVersion {
+            version: 2,
+            policy_hash: "bbb".to_string(),
+            timestamp: "2026-10-05T12:00:00Z".to_string(),
+            source: "remote".to_string(),
+            signature: None,
+        };
+
+        let result = distributor.resolve_conflict(&local, &remote);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("conflict"),
+            "Error should mention conflict: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_conflict_resolution_fail_no_conflict_returns_local() {
+        let config = FederatedPolicyConfig {
+            conflict_resolution: ConflictResolution::Fail,
+            ..Default::default()
+        };
+        let distributor = FederatedPolicyDistributor::new(config);
+
+        let local = FederatedPolicyVersion {
+            version: 1,
+            policy_hash: "same_hash".to_string(),
+            timestamp: "2026-10-05T12:00:00Z".to_string(),
+            source: "local".to_string(),
+            signature: None,
+        };
+        let remote = FederatedPolicyVersion {
+            version: 1,
+            policy_hash: "same_hash".to_string(),
+            timestamp: "2026-10-05T12:00:00Z".to_string(),
+            source: "remote".to_string(),
+            signature: None,
+        };
+
+        let result = distributor.resolve_conflict(&local, &remote);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().source, "local");
     }
 
     #[test]

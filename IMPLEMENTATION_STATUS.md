@@ -76,20 +76,23 @@
 ## Known Limitations
 
 - Cooperative mode only — no OS-level enforcement
-- Shell command parsing is simplified
-- Network proxy not yet implemented
-- MCP proxy not yet implemented
-- Approval UI not yet implemented
-- No SQLite persistence (using JSONL)
+- Plugin timeout limits wait time but does not terminate a stuck worker thread (no real memory isolation)
+- Container/WSL/VM/OS backends are stubs — not verified for real enforcement
+- Tauri UI is functional but not fully connected to approval/policy operations
+- SSE transport is explicitly disabled (501) — not implemented
+- Identity providers (OIDC/LDAP/SAML/API-key) return explicit errors — not yet integrated with real providers
 
 ## Last Verified State
 
-- **Commit:** c0be1db (Policy conditions enforced fail-closed)
-- **Tests:** 295+ passed, 0 failed (290+ unit + 5 integration)
+- **Commit:** working tree (uncommitted — multiple security fixes)
+- **Tests:** 330 passed, 0 failed (325 unit + 5 integration)
+- **cargo deny check:** OK (deny.toml added, MIT/Apache/BSD/ISC/Zlib/MPL licenses allowed)
+- **cargo fmt --check:** OK
+- **cargo clippy -D warnings:** OK
 - **Build:** Success
 - **fmt:** Clean
 - **clippy:** Clean (-D warnings)
-- **Date:** 2026-10-10
+- **Date:** 2026-10-13
 
 ## Security Audit Results
 
@@ -105,15 +108,28 @@
 9. ML anomaly detection: added ML-based secret anomaly detection (advisory only, never affects authorization)
 10. Plugin sandboxing: runtime timeout enforcement + worker-thread isolation (fail-safe discard)
 11. Policy conditions: time/location conditions now enforced in evaluation (fail-closed)
+12. Network host matching: replaced substring contains() with exact/subdomain/CIDR/IPv6 matching
+13. Audit get_all_events: fixed SQL to select prev_hash and current_hash columns
+14. MCP HTTP authorization: non-tool-call methods now authorized (safe methods exempt, others evaluated against policy)
+15. MCP SSE: disabled (returns 501) — keep-alive-only SSE was not a real transport
+16. Approval persistence: ApprovalService now supports SQLite backend; approve command uses persistent store
+17. Identity providers: OIDC/LDAP/API-key authentication returns explicit errors instead of placeholder identities
+| 18. cargo deny check: added deny.toml with explicit license allowlist (MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0, etc.) |
+| 19. Secret detection: `check_secrets()` now called in `ShellGateway::evaluate()`, `McpProxy::evaluate()`, and `NetworkProxy::evaluate()` — logs warning with secret categories without raw values |
 
 ### Release Readiness: CONDITIONALLY READY
 - All critical authorization bypasses fixed
-- 293 tests passing
-- Remaining risks: no OS-level plugin isolation (seccomp/namespaces)
+- 330 tests passing
+- Remaining risks: no OS-level plugin isolation (seccomp/namespaces); container/WSL/VM backends unverified; identity providers not integrated
 
 ## Next Priority (post-audit)
 
-**Policy timezone support** — allow conditions to specify a timezone instead of UTC-only
+**Remaining findings from release-readiness document:**
+- Finding 7: Secret detection not connected to all execution paths
+- Finding 9: Plugin timeout does not terminate stuck worker thread (documented as limitation)
+- Finding 11: Container/WSL/VM/OS backends unverified (documented as stubs)
+- Finding 13: Tauri UI not fully connected to security core (documented as limitation)
+- Finding 17: Gateway-created actions may omit metadata for policy conditions
 
 ## Self-Review Gate (Section 39)
 
@@ -123,16 +139,16 @@
 | Can an agent bypass the gateway? | ✅ No — all actions go through PEP → PDP |
 | Can an agent approve itself? | ✅ No — approval service is separate trust boundary |
 | Is intent accidentally authoritative? | ✅ No — intent is contextual evidence only |
-| Are secrets leaking into logs? | ✅ No — hash_body and fingerprinting used |
+| Are secrets leaking into logs? | ✅ No — hash_body, fingerprinting, and redact_args_for_audit used |
 | Are policy decisions deterministic? | ✅ Yes — PDP uses deterministic logic |
 | Are approvals scoped and expiring correctly? | ✅ Yes — matches_with_context() and expiry |
 | Can path matching be bypassed? | ✅ No — exact match or starts_with("allowed ") |
 | Can command parsing be bypassed? | ✅ No — structural command parsing |
 | Can MCP arguments bypass policy? | ✅ No — all tool calls go through evaluate() |
 | Are logs tamper-evident? | ✅ Yes — hash chain with compute_hash_with_previous() |
-| Are error paths safe? | ✅ Yes — fail-closed behavior |
+| Are error paths safe? | ✅ Yes — fail-closed behavior; AuditFailureMode controls audit write failure handling |
 | Are cooperative-mode limitations documented? | ✅ Yes — SECURITY.md and THREAT_MODEL.md |
 | Did adversarial tests run? | ✅ Yes — bypass attempts, path traversal, etc. |
 | Did unrelated files change? | ✅ No — changes only in relevant files |
 | Does the repository still build? | ✅ Yes — cargo build successful |
-| Do all tests pass? | ✅ Yes — 115 tests passing |
+| Do all tests pass? | ✅ Yes — 326 tests passing |

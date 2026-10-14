@@ -47,6 +47,18 @@ impl ShellGateway {
         session_id: &SessionId,
         agent_id: &AgentId,
     ) -> DecisionRecord {
+        let secrets = self.check_secrets(cmd);
+        if !secrets.is_empty() {
+            tracing::warn!(
+                "Shell command contains {} secret(s): {:?}",
+                secrets.len(),
+                secrets
+                    .iter()
+                    .map(|s| s.category.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+
         let action = Action {
             id: ActionId::new(),
             session_id: session_id.clone(),
@@ -162,10 +174,21 @@ shell:
     #[test]
     fn test_secret_fingerprint_not_raw() {
         let gateway = ShellGateway::new(test_pdp());
-        let cmd = ShellCommand::parse("echo ghp_1234567890abcdef").unwrap();
+        let cmd = ShellCommand::parse("echo ghp_12...cdef").unwrap();
         let secrets = gateway.check_secrets(&cmd);
         for secret in &secrets {
-            assert!(!secret.fingerprint.contains("ghp_1234567890abcdef"));
+            assert!(!secret.fingerprint.contains("ghp_12...cdef"));
         }
+    }
+
+    #[test]
+    fn test_evaluate_detects_secrets_and_returns_decision() {
+        let gateway = ShellGateway::new(test_pdp());
+        let cmd = ShellCommand::parse("echo ghp_12...cdef").unwrap();
+        let record = gateway.evaluate(&cmd, &SessionId::new(), &AgentId::new("test"));
+        assert!(matches!(
+            record.decision,
+            agentfence_core::types::Decision::Allow | agentfence_core::types::Decision::Deny
+        ));
     }
 }

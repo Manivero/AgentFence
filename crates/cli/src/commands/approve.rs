@@ -7,13 +7,38 @@ use std::io::{self, Write};
 
 use agentfence_approval::approval::{ApprovalScope, ApprovalService};
 use agentfence_core::types::{ActionId, Decision, SessionId};
+use std::path::PathBuf;
+
+/// Get the default database path for approvals.
+fn get_db_path() -> PathBuf {
+    let data_dir = dirs_next::data_dir()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    data_dir.join("agentfence").join("approvals.db")
+}
 
 /// Execute the approve command.
 ///
 /// If action_id is "list", shows pending approvals.
 /// Otherwise, shows interactive prompt for the specified action.
 pub fn execute(action_id: &str, decision: &str) {
-    let service = ApprovalService::new();
+    let db_path = get_db_path();
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let service = match ApprovalService::new_with_db(db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to initialize approval service: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Load existing approvals from DB
+    if let Err(e) = service.load_from_db() {
+        eprintln!("Failed to load approvals from database: {}", e);
+        std::process::exit(1);
+    }
 
     if action_id == "list" {
         list_pending_approvals(&service);
@@ -79,12 +104,31 @@ pub fn execute(action_id: &str, decision: &str) {
 }
 
 /// List all pending approvals.
-fn list_pending_approvals(_service: &ApprovalService) {
+fn list_pending_approvals(service: &ApprovalService) {
+    let pending = service.list_pending();
+
     println!("AgentFence Pending Approvals");
     println!("============================");
     println!();
-    println!("Note: Pending approval listing is not yet implemented in this version.");
-    println!("Use 'agentfence approve <action_id>' to approve a specific action.");
+
+    if pending.is_empty() {
+        println!("No pending approvals.");
+        return;
+    }
+
+    for (i, record) in pending.iter().enumerate() {
+        println!("  [{}] Action: {}", i + 1, record.action_id.0);
+        println!("      Approval ID: {}", record.approval_id);
+        println!("      Session:     {}", record.session_id.0);
+        println!("      Scope:       {:?}", record.scope);
+        println!("      Issued:      {}", record.issued_at);
+        if let Some(expires) = record.expires_at {
+            println!("      Expires:     {}", expires);
+        }
+        println!();
+    }
+
+    println!("Use 'agentfence approve <action_id> --decision allow|deny' to decide.");
 }
 
 /// Interactive approval prompt.

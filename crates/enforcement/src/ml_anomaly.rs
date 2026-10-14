@@ -529,8 +529,10 @@ mod tests {
 
     #[test]
     fn test_ml_anomaly_detection_disabled() {
-        let mut config = MlAnomalyConfig::default();
-        config.enabled = false;
+        let config = MlAnomalyConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let mut detector = MlAnomalyDetector::new(config);
 
         let action = test_action("shell");
@@ -626,8 +628,10 @@ mod tests {
 
     #[test]
     fn test_analyze_secrets_disabled() {
-        let mut config = MlAnomalyConfig::default();
-        config.enabled = false;
+        let config = MlAnomalyConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let mut detector = MlAnomalyDetector::new(config);
         let action = test_action("shell");
         let secrets = vec![agentfence_secrets::detector::DetectedSecret {

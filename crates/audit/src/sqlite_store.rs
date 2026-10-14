@@ -290,7 +290,7 @@ impl SqliteStore {
         let mut stmt = self.conn.prepare(
             "SELECT event_id, session_id, agent_id, task_id, action_id, parent_action_id,
                     timestamp, action_type, tool, target, args_hash, decision, risk_level,
-                    rule_id, policy_version, policy_hash
+                    rule_id, policy_version, policy_hash, prev_hash, current_hash
              FROM events ORDER BY timestamp ASC",
         )?;
 
@@ -690,6 +690,30 @@ mod tests {
 
         let result = store.verify_session(&session_id.0).unwrap();
         assert!(matches!(result, VerificationResult::Invalid { .. }));
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_get_all_events_returns_all_columns() {
+        let db_path = std::env::temp_dir().join(format!("af_test_{}.db", uuid::Uuid::new_v4()));
+        let store = SqliteStore::new(&db_path).unwrap();
+        let session_id = SessionId::new();
+
+        let event = test_event(session_id.clone());
+        store.record_event(&event).unwrap();
+
+        let all = store.get_all_events().unwrap();
+        assert_eq!(all.len(), 1);
+        let loaded = &all[0];
+        assert_eq!(loaded.event_id, event.event_id);
+        // record_event sets previous_hash from the chain predecessor ("0" * 64
+        // for the first event in a session), not from the caller's field.
+        assert_eq!(loaded.previous_hash, "0".repeat(64));
+        // current_hash is computed from the event with the correct previous_hash
+        // current_hash is computed from the stored event with its actual previous_hash
+        assert_eq!(loaded.current_hash, loaded.compute_hash());
+        assert_eq!(loaded.policy_hash, event.policy_hash);
 
         let _ = std::fs::remove_file(&db_path);
     }

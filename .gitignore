@@ -30,3 +30,8 @@ Thumbs.db
 # Build artifacts
 dist/
 build/
+
+# WASM plugin guest fixtures are standalone crates; their build output is
+# regenerable via crates/wasm-plugin/build-fixtures.sh and must not be committed.
+/crates/wasm-plugin/guest/target/
+/crates/wasm-plugin/guest-hostcaps/target/

@@ -1,0 +1,15 @@
+[package]
+name = "agentfence-hostcaps-guest"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Guest fixture that imports host capabilities the AgentFence sandbox does NOT grant"
+
+# Standalone workspace root (see crates/wasm-plugin/guest/Cargo.toml).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.39"

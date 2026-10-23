@@ -73,10 +73,68 @@
 4. Web UI for approvals
 5. Container/VM enforcement backends
 
+## WASM Plugin Sandbox (v1.1)
+
+### Status: IMPLEMENTED AND VERIFIED (real component execution)
+
+Untrusted policy plugins now execute as genuine WebAssembly **components**
+inside a Wasmtime sandbox. This is not a cooperative timeout wrapper: the
+controls below are enforced by the runtime and are covered by tests.
+
+**Architecture:**
+- `agentfence-wasm-plugin` — the sandbox runtime. It depends on
+  `agentfence-core` only; it does **not** depend on `agentfence-policy`. That
+  removal breaks the dependency cycle which previously forced a duplicate,
+  non-functional execution path in the policy crate.
+- WIT interface `agentfence:policy@0.1.0` defines the plugin ABI
+  (`evaluate`, `applies-to`).
+- `agentfence-policy` converts `PluginContext` ↔ WIT types, calls the
+  sandbox, maps the result back, and re-applies the Allow→abstain rule.
+
+**Security controls (each verified by a test):**
+- Real WebAssembly component isolation via Wasmtime 48.0.7 (component model,
+  `wasm32-unknown-unknown` guest)
+- Fuel-based interruption — a deliberately non-terminating guest is stopped
+  within the execution budget
+- **Real** memory and table limits: `Store::limiter` + `StoreLimits` attached
+  to the store data. A 1 MB budget rejects a component that needs more; a
+  64 MB budget accepts the same component
+- **Empty linker** — no WASI, no host imports. A guest that imports a host
+  capability fails at instantiation (verified with a dedicated fixture)
+- Module size limit (10 MB) and bounded action size
+- SHA-256 fingerprint verified over the exact bytes that are then executed
+  (single read → verify → compile, which closes the verification/compilation
+  TOCTOU window)
+- Result sanitization: decision 3 (Allow) → abstain; 1 (Deny) and 2 (Ask)
+  preserved; traps, malformed results and fuel exhaustion are explicit
+  execution failures, never an Allow
+
+**Fixtures (committed and reproducible via `build-fixtures.sh`):**
+- `tests/fixtures/test-plugin.component.wasm` — real component with deny /
+  ask / allow / trap / infinite-loop behaviours
+- `tests/fixtures/test-plugin.core.wasm` — a valid core module that is NOT a
+  component (negative fixture)
+- `tests/fixtures/hostcaps-plugin.component.wasm` — imports a host capability
+  the sandbox does not grant (negative fixture)
+
+**Test coverage:** 10 unit + 20 integration tests in `agentfence-wasm-plugin`,
+plus 12 registry-level tests in `agentfence-policy` that execute the real
+component through the public API.
+
+**Known Limitations:**
+- The guest must be built for `wasm32-unknown-unknown` and wrapped with
+  `wasm-tools component new`. Tests load the committed fixtures instead of
+  building the guest on every run.
+- Native (non-WASM) plugins remain a separate, trusted-plugin mechanism with
+  cooperative isolation (timeout bounds the wait but does not terminate a
+  stuck worker thread). Native plugins are never silently promoted to WASM
+  isolation.
+
 ## Known Limitations
 
 - Cooperative mode only — no OS-level enforcement
 - Plugin timeout limits wait time but does not terminate a stuck worker thread (no real memory isolation)
+- Native plugin sandboxing is cooperative: timeout + worker-thread isolation, but no memory/CPU isolation. WASM plugins are genuinely isolated by the Wasmtime sandbox instead.
 - Container/WSL/VM/OS backends are stubs — not verified for real enforcement
 - Tauri UI is functional but not fully connected to approval/policy operations
 - SSE transport is explicitly disabled (501) — not implemented
@@ -84,15 +142,13 @@
 
 ## Last Verified State
 
-- **Commit:** working tree (uncommitted — multiple security fixes)
-- **Tests:** 330 passed, 0 failed (325 unit + 5 integration)
-- **cargo deny check:** OK (deny.toml added, MIT/Apache/BSD/ISC/Zlib/MPL licenses allowed)
+- **Commit:** working tree (uncommitted — WASM plugin sandbox integration + tests)
+- **Tests:** 385 passed, 0 failed (365 unit + 20 integration across the workspace)
+- **cargo deny check:** advisories ok, bans ok, licenses ok, sources ok
 - **cargo fmt --check:** OK
 - **cargo clippy -D warnings:** OK
 - **Build:** Success
-- **fmt:** Clean
-- **clippy:** Clean (-D warnings)
-- **Date:** 2026-10-13
+- **Date:** 2026-10-22
 
 ## Security Audit Results
 

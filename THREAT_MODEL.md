@@ -139,3 +139,4 @@
 - Compromised AgentFence process
 - Bypass through unmanaged processes
 - HTTPS tunnel content inspection (encrypted)
+- WASM plugin sandboxing (Wasmtime 48.0.7, fuel-based interruption, real memory/table limits, empty linker with no WASI or host imports, SHA-256 fingerprint verification, 10 MB module size limit)

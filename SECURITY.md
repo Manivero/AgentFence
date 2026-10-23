@@ -35,6 +35,26 @@ These rules may never be broken — not temporarily, not for convenience, not fo
 
 10. **The local repository is the source of truth.** Inspect it before changing it.
 
+## Plugin Security
+
+- **Native plugins** are a separate, trusted mechanism: timeout enforcement and
+  worker-thread isolation (cooperative mode — no memory/CPU isolation)
+- **WebAssembly plugins** execute as real WebAssembly **components** inside a
+  Wasmtime sandbox:
+  - Real component-model isolation (not a cooperative timeout wrapper)
+  - Fuel-based interruption (a non-terminating guest is stopped within budget)
+  - Real memory and table limits (`Store::limiter` + `StoreLimits` on the store)
+  - **Empty linker** — no WASI, no host imports, so no filesystem, network,
+    environment or process capability can be reached
+  - Module fingerprint verification (SHA-256) over the exact bytes executed
+  - Module size limit (10 MB) and bounded action size
+- Plugin results are sanitized: decision 3 (Allow) → abstain; Deny/Ask preserved
+- Traps, malformed results and fuel exhaustion are explicit execution failures —
+  never an Allow
+- Plugin failures are logged and ignored (fail-safe)
+- Plugin API is versioned and stable
+- Fixtures are committed and regenerable via `crates/wasm-plugin/build-fixtures.sh`
+
 ## Trust Boundaries
 
 | Boundary | Trust Level |

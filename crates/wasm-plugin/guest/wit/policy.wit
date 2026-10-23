@@ -1,0 +1,46 @@
+package agentfence:policy@0.1.0;
+
+/// Test guest world for AgentFence policy plugin fixtures.
+///
+/// SECURITY: The guest only exports the `plugin` interface. It receives a
+/// bounded `action` record and returns a bounded `plugin-result`. It has no
+/// access to the filesystem, network, environment, or process execution.
+world test-plugin {
+    export plugin;
+}
+
+interface plugin {
+    /// Bounded action representation.
+    record action {
+        id: string,
+        action-type: string,
+        tool: string,
+        target: string,
+        session-id: string,
+        agent-id: string,
+        task-id: option<string>,
+        cwd: option<string>,
+        repository: option<string>,
+        branch: option<string>,
+    }
+
+    /// Bounded result from plugin evaluation.
+    record plugin-result {
+        /// Decision: 0 = abstain, 1 = deny, 2 = ask.
+        /// SECURITY: Allow is NOT a valid plugin decision.
+        decision: u8,
+        rule-id: string,
+        reason: string,
+        /// Optional diagnostic evidence (bounded length).
+        evidence: option<string>,
+    }
+
+    /// Check if this plugin applies to the given action.
+    applies-to: func(action: action) -> bool;
+
+    /// Evaluate the plugin policy rule for the given action.
+    ///
+    /// SECURITY: The guest cannot grant Allow. Only Deny (1) or Ask (2)
+    /// are valid decisions. Any other value is treated as abstain.
+    evaluate: func(action: action) -> result<plugin-result, string>;
+}

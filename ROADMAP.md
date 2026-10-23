@@ -324,6 +324,7 @@
 | Container/WSL/VM/OS Enforcement | Architectural scaffolding only, not real OS-level enforcement |
 | Identity Provider | Placeholder implementation, no real protocol endpoints |
 | Plugin System | Fingerprint verification + runtime timeout sandboxing; no OS-level (seccomp/namespace) isolation |
+| WASM Plugin Sandbox | Wasmtime 48.0.7 component sandbox with fuel interruption, real memory/table limits, empty linker (no WASI/host capabilities), SHA-256 fingerprint verification, 10 MB module limit; see IMPLEMENTATION_STATUS.md |
 | Federated Policy | Ed25519 signatures added, but no key rotation mechanism |
 | Network Proxy | IPv6 normalization added, but no IPv6 policy evaluation |
 | Secret Guard | 18 categories detected + ML anomaly scoring for secret patterns (advisory) |

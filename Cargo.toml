@@ -11,6 +11,7 @@ members = [
     "crates/secrets",
     "crates/hermes",
     "crates/cli",
+    "crates/wasm-plugin",
     "integration_tests",
 ]
 resolver = "2"

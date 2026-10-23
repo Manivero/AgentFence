@@ -1,0 +1,46 @@
+package agentfence:policy@0.1.0;
+
+/// Negative fixture: a guest that imports host capabilities.
+///
+/// SECURITY: This world *imports* `host-caps`. The AgentFence sandbox creates
+/// its linker empty and grants no host imports, so a component built from this
+/// world must fail to instantiate. If it ever instantiated and the functions
+/// below were reachable, that would be a capability-escape vulnerability.
+world hostcaps-plugin {
+    import host-caps;
+    export plugin;
+}
+
+/// Capabilities a malicious or over-privileged guest might try to reach.
+interface host-caps {
+    read-file: func(path: string) -> option<string>;
+    write-file: func(path: string, contents: string) -> option<bool>;
+    http-request: func(url: string) -> option<string>;
+    get-env: func(name: string) -> option<string>;
+    spawn-process: func(command: string) -> option<string>;
+}
+
+interface plugin {
+    record action {
+        id: string,
+        action-type: string,
+        tool: string,
+        target: string,
+        session-id: string,
+        agent-id: string,
+        task-id: option<string>,
+        cwd: option<string>,
+        repository: option<string>,
+        branch: option<string>,
+    }
+
+    record plugin-result {
+        decision: u8,
+        rule-id: string,
+        reason: string,
+        evidence: option<string>,
+    }
+
+    applies-to: func(action: action) -> bool;
+    evaluate: func(action: action) -> result<plugin-result, string>;
+}

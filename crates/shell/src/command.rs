@@ -20,12 +20,42 @@ pub enum CommandError {
 pub type Result<T> = std::result::Result<T, CommandError>;
 
 /// A parsed shell command with structured representation.
+///
+/// SECURITY: this is **untrusted input**. It is parsed from a raw command
+/// string that an agent controls, so it must never carry location metadata
+/// (`host`, `client_ip`). Verified location data belongs to
+/// [`crate::trusted::TrustedShellContext`], which is supplied separately to the
+/// gateway and cannot be built from this type.
+///
+/// # Compile-time enforcement
+///
+/// There is no `env_metadata` field and no public setter for one. Both attempts
+/// below are rejected by the compiler — the trust boundary is structural, not
+/// conventional:
+///
+/// ```compile_fail
+/// use agentfence_shell::command::ShellCommand;
+///
+/// let _ = ShellCommand {
+///     executable: "git".to_string(),
+///     arguments: Vec::new(),
+///     cwd: None,
+///     env_metadata: None,
+///     raw: "git status".to_string(),
+/// };
+/// ```
+///
+/// ```compile_fail
+/// use agentfence_shell::command::ShellCommand;
+///
+/// let cmd = ShellCommand::parse("git status").unwrap();
+/// let _ = cmd.env_metadata;
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellCommand {
     pub executable: String,
     pub arguments: Vec<String>,
     pub cwd: Option<String>,
-    pub env_metadata: Option<serde_json::Value>,
     pub raw: String,
 }
 
@@ -37,6 +67,10 @@ impl ShellCommand {
     /// - Double quotes: allows expansion
     /// - Escape sequences: backslash handling
     /// - Unbalanced quotes: parse error
+    ///
+    /// SECURITY: the result carries no location metadata. Any `host`/`client_ip`
+    /// that appears in `raw` is untrusted command text and is never used as a
+    /// location source.
     pub fn parse(raw: &str) -> crate::command::Result<Self> {
         let tokens = tokenize(raw)?;
         if tokens.is_empty() {
@@ -47,7 +81,6 @@ impl ShellCommand {
             executable: tokens[0].clone(),
             arguments: tokens[1..].to_vec(),
             cwd: None,
-            env_metadata: None,
             raw: raw.to_string(),
         })
     }

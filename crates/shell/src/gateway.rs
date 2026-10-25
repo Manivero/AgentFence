@@ -8,6 +8,7 @@ use agentfence_policy::pdp::Pdp;
 use agentfence_secrets::detector::SecretDetector;
 
 use crate::command::ShellCommand;
+use crate::trusted::{TrustedContextToken, TrustedShellContext};
 
 /// Shell gateway.
 ///
@@ -38,12 +39,52 @@ impl ShellGateway {
         self.secret_detector.detect(&cmd.raw, "shell")
     }
 
-    /// Evaluate a shell command.
+    /// Mint a capability token for the trusted integration layer.
+    ///
+    /// SECURITY: the token is what makes it possible to build a
+    /// [`TrustedShellContext`]. Only code that already holds a `ShellGateway` —
+    /// a trusted component — can call this, so an untrusted agent cannot mint a
+    /// token and therefore cannot assert its own `host` or `client_ip`.
+    pub fn issue_trusted_context_token(&self) -> TrustedContextToken {
+        TrustedContextToken::new()
+    }
+
+    /// Evaluate a shell command with no verified location metadata.
     ///
     /// Returns a decision record with full explanation.
+    ///
+    /// This is the path untrusted callers must use: no `host`/`client_ip` is
+    /// supplied, so a location condition that requires them fails closed (DENY)
+    /// rather than being silently satisfied.
+    ///
+    /// SECURITY — context provenance:
+    ///
+    /// `client_ip` and `host` come only from [`TrustedShellContext`], which
+    /// cannot be built without a [`TrustedContextToken`]. They are never
+    /// derived from `cmd.raw`, because the raw command string is
+    /// caller-controlled: a command that merely names a host must not
+    /// authorise itself.
     pub fn evaluate(
         &self,
         cmd: &ShellCommand,
+        session_id: &SessionId,
+        agent_id: &AgentId,
+    ) -> DecisionRecord {
+        self.evaluate_with_context(cmd, &TrustedShellContext::empty(), session_id, agent_id)
+    }
+
+    /// Evaluate a shell command with verified location metadata.
+    ///
+    /// SECURITY: `trusted` must be built through [`TrustedShellContext::new`]
+    /// with a [`TrustedContextToken`]. That constructor's token argument can
+    /// only be produced by [`Self::issue_trusted_context_token`], so this path
+    /// is unreachable for untrusted input. Passing an empty context (the
+    /// untrusted case) is impossible for external callers: `empty()` is
+    /// crate-private.
+    pub fn evaluate_with_context(
+        &self,
+        cmd: &ShellCommand,
+        trusted: &TrustedShellContext,
         session_id: &SessionId,
         agent_id: &AgentId,
     ) -> DecisionRecord {
@@ -59,6 +100,11 @@ impl ShellGateway {
             );
         }
 
+        // Verified location data. Sourced exclusively from the trusted context;
+        // `cmd.raw` is never inspected for a location.
+        let client_ip = trusted.client_ip().map(str::to_string);
+        let host = trusted.host().map(str::to_string);
+
         let action = Action {
             id: ActionId::new(),
             session_id: session_id.clone(),
@@ -73,6 +119,8 @@ impl ShellGateway {
                     .ok()
                     .and_then(|p| p.to_str().map(String::from)),
                 session_id: Some(session_id.clone()),
+                client_ip,
+                host,
                 ..Default::default()
             },
         };
@@ -196,5 +244,140 @@ shell:
             record.decision,
             agentfence_core::types::Decision::Allow | agentfence_core::types::Decision::Deny
         ));
+    }
+
+    // ── Location context propagation ─────────────────────────────────────────
+
+    fn pdp_with_host_location() -> Pdp {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+shell:
+  allow:
+    - git
+  conditions:
+    location:
+      allowed_hosts:
+        - build-server-01
+"#;
+        Pdp::new(parse_policy(yaml).unwrap())
+    }
+
+    fn pdp_with_ip_location() -> Pdp {
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+shell:
+  allow:
+    - git
+  conditions:
+    location:
+      allowed_ips:
+        - "10.0.0.0/8"
+"#;
+        Pdp::new(parse_policy(yaml).unwrap())
+    }
+
+    /// Build a verified context exactly the way the trusted integration layer
+    /// does: mint a token from the gateway, then construct the context.
+    fn verified_context(
+        gateway: &ShellGateway,
+        host: Option<&str>,
+        client_ip: Option<&str>,
+    ) -> TrustedShellContext {
+        let token = gateway.issue_trusted_context_token();
+        TrustedShellContext::new(
+            token,
+            host.map(str::to_string),
+            client_ip.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn test_location_host_from_verified_context_allowed() {
+        let gateway = ShellGateway::new(pdp_with_host_location());
+        let cmd = ShellCommand::parse("git status").unwrap();
+        let ctx = verified_context(&gateway, Some("build-server-01"), None);
+        let record =
+            gateway.evaluate_with_context(&cmd, &ctx, &SessionId::new(), &AgentId::new("test"));
+        assert_eq!(record.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_location_host_without_context_fails_closed() {
+        // The untrusted path supplies no location data, so the condition fails
+        // closed even though the command is otherwise allowed.
+        let gateway = ShellGateway::new(pdp_with_host_location());
+        let cmd = ShellCommand::parse("git status").unwrap();
+        let record = gateway.evaluate(&cmd, &SessionId::new(), &AgentId::new("test"));
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "shell.conditions");
+    }
+
+    #[test]
+    fn test_location_host_not_derived_from_command() {
+        // A command that merely names a host must not authorise itself:
+        // `cmd.raw` is caller-controlled and is never a location source.
+        let gateway = ShellGateway::new(pdp_with_host_location());
+        let cmd = ShellCommand::parse("git build-server-01").unwrap();
+        let record = gateway.evaluate(&cmd, &SessionId::new(), &AgentId::new("test"));
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "shell.conditions");
+    }
+
+    #[test]
+    fn test_location_host_wrong_value_denied() {
+        let gateway = ShellGateway::new(pdp_with_host_location());
+        let cmd = ShellCommand::parse("git status").unwrap();
+        let ctx = verified_context(&gateway, Some("evil.example.com"), None);
+        let record =
+            gateway.evaluate_with_context(&cmd, &ctx, &SessionId::new(), &AgentId::new("test"));
+        assert_eq!(record.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn test_location_verified_context_without_values_fails_closed() {
+        // A capability token is not a free pass: a context built with it but
+        // carrying no values still fails closed.
+        let gateway = ShellGateway::new(pdp_with_host_location());
+        let cmd = ShellCommand::parse("git status").unwrap();
+        let ctx = verified_context(&gateway, None, None);
+        let record =
+            gateway.evaluate_with_context(&cmd, &ctx, &SessionId::new(), &AgentId::new("test"));
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "shell.conditions");
+    }
+
+    #[test]
+    fn test_location_client_ip_from_verified_context_allowed() {
+        let gateway = ShellGateway::new(pdp_with_ip_location());
+        let cmd = ShellCommand::parse("git status").unwrap();
+        let ctx = verified_context(&gateway, None, Some("10.1.2.3"));
+        let record =
+            gateway.evaluate_with_context(&cmd, &ctx, &SessionId::new(), &AgentId::new("test"));
+        assert_eq!(record.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_location_client_ip_outside_range_denied() {
+        let gateway = ShellGateway::new(pdp_with_ip_location());
+        let cmd = ShellCommand::parse("git status").unwrap();
+        let ctx = verified_context(&gateway, None, Some("192.168.1.5"));
+        let record =
+            gateway.evaluate_with_context(&cmd, &ctx, &SessionId::new(), &AgentId::new("test"));
+        assert_eq!(record.decision, Decision::Deny);
+    }
+
+    #[test]
+    fn test_untrusted_path_ignores_command_host_like_arguments() {
+        // End-to-end proof of the trust boundary: even a command that spells
+        // out the allowed host and IP cannot influence the untrusted path.
+        let gateway = ShellGateway::new(pdp_with_host_location());
+        let cmd = ShellCommand::parse("git build-server-01 --from 10.0.0.5").unwrap();
+        let record = gateway.evaluate(&cmd, &SessionId::new(), &AgentId::new("test"));
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "shell.conditions");
     }
 }

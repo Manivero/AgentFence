@@ -6,3 +6,4 @@
 
 pub mod command;
 pub mod gateway;
+pub mod trusted;

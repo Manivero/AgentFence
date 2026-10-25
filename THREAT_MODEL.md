@@ -126,6 +126,7 @@
 - Network rate limiting (shared token bucket)
 - Plugin sandboxing (fingerprint verification, runtime timeout, worker-thread isolation)
 - Native plugin worker concurrency cap (`MAX_PLUGIN_WORKERS`) — bounds thread growth from plugins that never return; does not terminate them
+- WASM plugin sandboxing (Wasmtime 48.0.7, fuel-based interruption, real memory/table limits, empty linker with no WASI or host imports, SHA-256 fingerprint verification, 10 MB module size limit)
 
 ## Threats AgentFence Can Only Observe
 
@@ -141,4 +142,3 @@
 - Compromised AgentFence process
 - Bypass through unmanaged processes
 - HTTPS tunnel content inspection (encrypted)
-- WASM plugin sandboxing (Wasmtime 48.0.7, fuel-based interruption, real memory/table limits, empty linker with no WASI or host imports, SHA-256 fingerprint verification, 10 MB module size limit)

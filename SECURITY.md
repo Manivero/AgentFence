@@ -75,6 +75,49 @@ These rules may never be broken — not temporarily, not for convenience, not fo
 | Shell Commands | Low |
 | Network Resources | Low |
 
+## Context Provenance
+
+Authorization context is only as trustworthy as its source. Each gateway fills
+`Context` from the most trusted source available to it:
+
+| Gateway | `host` source | `client_ip` source |
+|---------|---------------|--------------------|
+| MCP | `McpToolCall.server` (server identity from the tool call) | not available |
+| Network | parsed request target host | not available |
+| Shell | `TrustedShellContext.host` (verified by the trusted integration layer) | `TrustedShellContext.client_ip` |
+
+### Shell: structural enforcement
+
+`ShellCommand` is **untrusted input** — it is parsed from a raw command string an
+agent controls. It cannot carry location metadata:
+
+- the `env_metadata` field has been **removed**; there is no public field or
+  setter for one (enforced by the `compile_fail` doc-tests on `ShellCommand`);
+- verified location data lives in a separate `TrustedShellContext` with
+  **private fields** and **no public `Default`**;
+- the only constructor requires a `TrustedContextToken`, whose own constructor
+  is private to `agentfence-shell`. Tokens are minted only by
+  `ShellGateway::issue_trusted_context_token()`, which is reachable only by code
+  that already holds a `ShellGateway` — a trusted component.
+
+Consequences:
+
+- **Untrusted input cannot assert its own `host`/`client_ip`.** It cannot build
+  a `TrustedShellContext`, so it cannot reach `evaluate_with_context` with one.
+- **The untrusted path (`evaluate`) supplies no location data**, so any location
+  condition that requires a value fails closed (DENY).
+- **`cmd.raw` is never parsed for a location.** A command that names a host does
+  not authorise itself.
+
+Rules:
+
+- **Missing values stay `None`.** No fabricated defaults; the condition fails
+  closed.
+- **The token is a capability marker, not a cryptographic proof.** Its strength
+  is that an untrusted agent never holds a `ShellGateway`. Within one process the
+  type system cannot distinguish trusted from untrusted *code* — only trusted
+  from untrusted *data* — and that is exactly what this boundary enforces.
+
 ## Decision Model
 
 Every authorization decision is structured:

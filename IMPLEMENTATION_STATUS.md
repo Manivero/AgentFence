@@ -134,6 +134,7 @@ component through the public API.
 
 - Cooperative mode only — no OS-level enforcement
 - Plugin timeout limits wait time but does not terminate a stuck worker thread (no real memory isolation). Native plugin worker threads are capped at `MAX_PLUGIN_WORKERS` (16); once the cap is reached, further plugins are skipped fail-closed instead of growing the thread count without bound. Reliable thread termination is not guaranteed by the current architecture.
+- ShellGateway cannot be fed trusted location metadata by an untrusted caller: `ShellCommand` has no metadata field, and verified `host`/`client_ip` come only from `TrustedShellContext`, whose token-gated constructor is unreachable outside the trusted integration layer. The raw command string is never used as a location source, and the untrusted path fails closed.
 - Native plugin sandboxing is cooperative: timeout + worker-thread isolation, but no memory/CPU isolation. WASM plugins are genuinely isolated by the Wasmtime sandbox instead.
 - Container/WSL/VM/OS backends are stubs — not verified for real enforcement
 - Tauri UI is functional but not fully connected to approval/policy operations

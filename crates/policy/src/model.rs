@@ -339,9 +339,18 @@ fn evaluate_shell(policy: &Policy, action: &Action) -> DecisionRecord {
 
     let cmd = &action.target;
 
-    // Check deny list first
+    // Check deny list first.
+    //
+    // SECURITY: matching is case-insensitive. Executables on Windows are
+    // case-insensitive, so a case-sensitive deny would let an entry such as
+    // `deny: [powershell]` be evaded by invoking `PowerShell`. Deny is checked
+    // before allow, so a missed deny falls through to the allow/default
+    // decision — a missed deny is a bypass, an over-broad deny is merely
+    // conservative. Case-folding therefore only ever *strengthens* the deny
+    // list; it cannot allow anything that was previously denied.
+    let cmd_folded = cmd.to_lowercase();
     for denied in &shell.deny {
-        if cmd.contains(denied.as_str()) {
+        if cmd_folded.contains(&denied.to_lowercase()) {
             return DecisionRecord::deny(
                 "shell.deny",
                 format!("Command matches denied executable: {}", denied),
@@ -1687,4 +1696,80 @@ network:
         assert_eq!(record.rule_id, "network.conditions");
     }
 
+    #[test]
+    fn test_shell_deny_is_case_insensitive() {
+        // SECURITY: Windows executables are case-insensitive, so a deny entry
+        // must not be evadable by changing the case of the invoked executable.
+        let yaml = r#"
+version: 1
+defaults:
+  shell: allow
+  network: deny
+  mcp: deny
+  filesystem: deny
+shell:
+  allow:
+    - powershell
+  deny:
+    - powershell
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(
+            ActionType::Shell,
+            "shell",
+            "PowerShell -Command 'Remove-Item C:\\'",
+        );
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "shell.deny");
+    }
+
+    #[test]
+    fn test_shell_deny_case_folding_cannot_be_rescued_by_allow() {
+        // Deny is evaluated first: an allow entry whose case differs from the
+        // invoked executable must not rescue a command the deny list matches
+        // after case-folding.
+        let yaml = r#"
+version: 1
+defaults:
+  shell: allow
+  network: deny
+  mcp: deny
+  filesystem: deny
+shell:
+  allow:
+    - PowerShell
+  deny:
+    - powershell
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Shell, "shell", "powershell -Command 'x'");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "shell.deny");
+    }
+
+    #[test]
+    fn test_shell_allow_unaffected_by_deny_case_folding() {
+        // Case-folding the deny list must not turn an unrelated allowed
+        // command into a denial.
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: deny
+  mcp: deny
+  filesystem: deny
+shell:
+  allow:
+    - git
+  deny:
+    - reg
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let action = test_action(ActionType::Shell, "shell", "git status");
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Allow);
+        assert_eq!(record.rule_id, "shell.allow");
+    }
 }

@@ -77,6 +77,23 @@ shell:
     - powershell
 ```
 
+## Shell Rule Matching
+
+`allow` and `ask` match the command's **executable** (exact executable, or the
+executable followed by a space or tab).
+
+`deny` matches a **substring of the whole command line**, including arguments,
+and is evaluated **before** `allow` and `ask`. This is deliberately the most
+conservative check: a deny that fails to match falls through to the allow list,
+so an over-broad deny is merely inconvenient while a missed deny is a bypass.
+
+Matching is **case-insensitive**. Executables on Windows are case-insensitive, so
+a case-sensitive deny would let an entry such as `deny: [powershell]` be evaded
+by invoking `PowerShell`. Case-folding therefore only ever *strengthens* the deny
+list. Consequence: a deny entry can also be tripped by an argument value (for
+example `deny: [reg]` blocks `git log --grep=region`). Prefer deny entries that
+name executables.
+
 ## Defaults
 
 If no rule matches, the default decision is used.

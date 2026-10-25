@@ -149,10 +149,7 @@ impl ShellGateway {
 }
 
 fn hash_args(args: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(args.as_bytes());
-    hex::encode(hasher.finalize())
+    crate::hash::hash_args(args)
 }
 
 #[cfg(test)]

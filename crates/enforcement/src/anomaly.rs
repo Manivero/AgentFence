@@ -232,6 +232,7 @@ mod tests {
             risk_level: RiskLevel::Low,
             policy_version: "1.0".to_string(),
             evidence: None,
+            action_id: ActionId::new(),
         }
     }
 

@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-use agentfence_core::types::{ActionId, AgentId, Decision, SessionId};
+use agentfence_core::types::{AgentId, Decision, SessionId};
 use agentfence_policy::{parser::load_policy, pdp::Pdp};
 use agentfence_shell::{command::ShellCommand, gateway::ShellGateway};
 use tracing::{error, info};
@@ -44,6 +44,12 @@ pub fn execute(policy_path: &str, command: &[String]) {
     println!();
 
     // Record audit event
+    //
+    // SECURITY: the audit event must reference the action that was actually
+    // evaluated, and must hash the arguments rather than recording a
+    // placeholder. `record.action_id` is stamped by the PDP from the evaluated
+    // action; minting a fresh id here would leave the audit trail unable to
+    // correlate the event with the decision (or with an approval record).
     let db_path = db::get_db_path();
     let _ = db::ensure_db_dir(&db_path);
     if let Ok(store) = agentfence_audit::sqlite_store::SqliteStore::new(&db_path) {
@@ -51,12 +57,12 @@ pub fn execute(policy_path: &str, command: &[String]) {
             session_id.clone(),
             agent_id.clone(),
             None,
-            ActionId::new(),
+            record.action_id.clone(),
             None,
             "shell",
             "shell",
             &raw_cmd,
-            "hash",
+            agentfence_shell::hash::hash_args(&raw_cmd),
             record.decision,
             record.risk_level,
             &record.rule_id,

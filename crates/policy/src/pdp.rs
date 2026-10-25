@@ -63,6 +63,7 @@ impl Pdp {
     pub fn evaluate(&self, action: &Action) -> DecisionRecord {
         let mut record = evaluate(&self.policy, action);
         record.policy_version = self.policy.version_string();
+        record.action_id = action.id.clone();
 
         let Some(plugins) = &self.plugins else {
             return record;
@@ -93,6 +94,7 @@ impl Pdp {
                 _ => unreachable!(),
             };
             tightened.policy_version = record.policy_version.clone();
+            tightened.action_id = action.id.clone();
             tightened.evidence = result.evidence.as_ref().map(|e| format!("plugin: {}", e));
             return tightened;
         }
@@ -443,6 +445,7 @@ mcp:
         assert_eq!(record.rule_id, "plugin.deny-all");
         assert!(record.reason.contains("deny-all matched"));
         // Correlation fields must survive a plugin tightening.
+        assert_eq!(record.action_id.0, action.id.0);
         assert!(!record.policy_version.is_empty());
     }
 

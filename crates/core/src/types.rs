@@ -227,6 +227,13 @@ pub struct DecisionRecord {
     pub evidence: Option<String>,
     pub risk_level: RiskLevel,
     pub policy_version: String,
+    /// The action this decision was made for.
+    ///
+    /// SECURITY: this is what lets an audit event be correlated back to the
+    /// action that produced it, and what an approval record is validated
+    /// against. It is stamped by the PDP from the evaluated action; a fresh
+    /// identifier minted at the audit-write site would break that correlation.
+    pub action_id: ActionId,
 }
 
 impl DecisionRecord {
@@ -238,6 +245,7 @@ impl DecisionRecord {
             evidence: None,
             risk_level: RiskLevel::Low,
             policy_version: String::new(),
+            action_id: ActionId::new(),
         }
     }
 
@@ -249,6 +257,7 @@ impl DecisionRecord {
             evidence: None,
             risk_level: RiskLevel::High,
             policy_version: String::new(),
+            action_id: ActionId::new(),
         }
     }
 
@@ -260,6 +269,7 @@ impl DecisionRecord {
             evidence: None,
             risk_level: RiskLevel::Medium,
             policy_version: String::new(),
+            action_id: ActionId::new(),
         }
     }
 }

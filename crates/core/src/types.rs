@@ -202,6 +202,10 @@ pub struct Context {
     pub session_id: Option<SessionId>,
     pub task_id: Option<TaskId>,
     pub env_metadata: Option<serde_json::Value>,
+    /// Client IP address for location-based policy conditions.
+    pub client_ip: Option<String>,
+    /// Target host for location-based policy conditions.
+    pub host: Option<String>,
 }
 
 // ─── Decision Reason ─────────────────────────────────────────────────────────

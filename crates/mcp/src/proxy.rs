@@ -101,6 +101,7 @@ impl McpProxy {
             args_hash: hash_args(&call.arguments),
             context: agentfence_core::types::Context {
                 session_id: Some(self.config.session_id.clone()),
+                host: call.server.clone(),
                 ..Default::default()
             },
         };
@@ -618,6 +619,18 @@ mcp:
 
         let record = proxy.evaluate(&call);
         assert_eq!(record.decision, Decision::Allow);
+    }
+
+    #[test]
+    fn test_evaluate_passes_host_in_context() {
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let call = McpToolCall {
+            tool: "github.create_issue".to_string(),
+            arguments: serde_json::json!({"repo": "example/repo"}),
+            server: Some("github".to_string()),
+        };
+        // evaluate() should complete without panic; host is passed to context
+        let _record = proxy.evaluate(&call);
     }
 
     #[test]

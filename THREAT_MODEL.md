@@ -110,7 +110,7 @@
 
 **Description:** An agent exfiltrates data through network requests.
 
-**Mitigation:** Network policy evaluation, HTTPS CONNECT tunnel inspection, rate limiting, request body hashing.
+**Mitigation:** Network policy evaluation, HTTPS CONNECT tunnel inspection, rate limiting (shared token bucket), request body hashing, connection pooling.
 
 **Residual Risk:** Medium — HTTPS tunnel content is encrypted and cannot be inspected.
 
@@ -123,7 +123,8 @@
 - Approval replay
 - Expired approval reuse
 - Log tampering (detection)
-- Network rate limiting
+- Network rate limiting (shared token bucket)
+- Plugin sandboxing (fingerprint verification, runtime timeout, worker-thread isolation)
 
 ## Threats AgentFence Can Only Observe
 

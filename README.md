@@ -6,7 +6,7 @@ AgentFence sits between an AI agent and the tools/resources the agent wants to u
 
 ## Status
 
-**Current phase:** Foundation (Phase 1-2 complete)
+**Current phase:** MVP complete (Phases 1-10). Release hardening in progress.
 
 **Protection Mode:** COOPERATIVE — Only actions routed through AgentFence are controlled. This is **not** a full OS security boundary.
 

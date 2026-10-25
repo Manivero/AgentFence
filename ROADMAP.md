@@ -312,8 +312,16 @@
 | Security Fix 9 | ML Anomaly Detection | Added ML-based secret anomaly detection (advisory only, never affects authorization) | cf1bc08 |
 | Security Fix 10 | Plugin Sandboxing | Runtime plugin sandboxing: bounded timeout, worker-thread isolation, fail-safe discard | 14f33ba |
 | Security Fix 11 | Policy Conditions | Time/location conditions now ENFORCED in evaluation (fail-closed); previously parsed but ignored | c0be1db |
-| Security Fix 12 | Network Host Matching | Replaced substring `contains()` with exact/subdomain/CIDR/IPv6 matching; `allow: github.com` no longer authorizes `evilgithub.com` | (working tree) |
-| Security Fix 13 | Audit get_all_events | SQL now selects `prev_hash` and `current_hash` columns that were being read but not selected | (working tree) |
+| Security Fix 12 | Network Host Matching | Replaced substring `contains()` with exact/subdomain/CIDR/IPv6 matching; `allow: github.com` no longer authorizes `evilgithub.com` | f363a42 |
+| Security Fix 13 | Audit get_all_events | SQL now selects `prev_hash` and `current_hash` columns that were being read but not selected | f363a42 |
+| Security Fix 14 | MCP HTTP Authorization | Non-tool-call methods now authorized (safe methods exempt) | f363a42 |
+| Security Fix 15 | MCP SSE | Disabled (501) — keep-alive-only SSE was not a real transport | f363a42 |
+| Security Fix 16 | Approval Persistence | ApprovalService now supports SQLite backend; approve command uses persistent store | f363a42 |
+| Security Fix 17 | Identity Providers | OIDC/LDAP/API-key authentication returns explicit errors instead of placeholder identities | f363a42 |
+| Security Fix 18 | Cargo deny | Added deny.toml with explicit license allowlist | f363a42 |
+| Security Fix 19 | Secret Detection | check_secrets() now called in evaluate() for shell, MCP, network gateways | f363a42 |
+| Security Fix 20 | Gateway Context | Action.context now populated with session_id and host in all gateway evaluate() methods | 69f4454 |
+| Security Fix 21 | Context Typed Fields | Added client_ip and host fields to Context for location-based policy conditions | (working tree) |
 
 ### Partially Implemented
 
@@ -338,7 +346,7 @@
 | VM Enforcement (QEMU/VirtualBox/Hyper-V/VMware) | Config structs only, no actual enforcement |
 | OS-Specific Enforcement (Linux auditd / Windows ETW) | Config structs only, no actual enforcement |
 | Identity Provider (OIDC/LDAP/SAML/API key) | Trait + config only, no real endpoints |
-| Federated Policy Distribution | Version sync only, no cryptographic signatures |
+| Federated Policy Distribution | Ed25519 signatures implemented; ConflictResolution::Fail returns error |
 
 ### Security Findings
 

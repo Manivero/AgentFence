@@ -18,18 +18,17 @@ For each MCP action, the proxy evaluates:
 - Policy
 - Repository/path/host context
 
-## MVP Transport
+## Transports
 
-**stdio** — The MVP uses stdio transport for MCP communication.
-
-## Future Transports
-
-- HTTP
-- SSE
-- Authentication
-- Schema discovery
-- Cancellation
-- Protocol versioning
+| Transport | Status |
+|-----------|--------|
+| stdio | **Implemented and verified** — JSON-RPC 2.0 over stdin/stdout |
+| HTTP | **Implemented with limitations** — POST /mcp, GET /health; non-tool-call methods require authorization |
+| SSE | **Unsupported** — returns 501 Not Implemented |
+| Authentication | **Not implemented** — placeholder methods return explicit errors |
+| Schema discovery | **Not implemented** |
+| Cancellation | **Not implemented** |
+| Protocol versioning | **Not implemented** |
 
 ## Security Considerations
 

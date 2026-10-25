@@ -188,16 +188,31 @@ fn ip_matches(ip: &str, allowed: &str) -> bool {
 /// `client_ip` and `host`. Missing metadata means the condition cannot be
 /// evaluated and is therefore NOT satisfied (fail-closed).
 pub fn location_condition_satisfied(cond: &LocationCondition, context: &Context) -> bool {
-    let meta = match &context.env_metadata {
-        Some(m) => m,
-        None => {
-            // No metadata at all: only satisfiable if the condition is empty.
-            return cond.allowed_ips.is_empty() && cond.allowed_hosts.is_empty();
-        }
-    };
+    // Prefer typed fields; fall back to env_metadata for backward compatibility.
+    let client_ip = context.client_ip.as_deref().or_else(|| {
+        context
+            .env_metadata
+            .as_ref()
+            .and_then(|m| m.get("client_ip"))
+            .and_then(|v| v.as_str())
+    });
+    let host = context.host.as_deref().or_else(|| {
+        context
+            .env_metadata
+            .as_ref()
+            .and_then(|m| m.get("host"))
+            .and_then(|v| v.as_str())
+    });
 
-    let client_ip = meta.get("client_ip").and_then(|v| v.as_str());
-    let host = meta.get("host").and_then(|v| v.as_str());
+    // If neither typed fields nor metadata provide the required data,
+    // the condition cannot be evaluated → NOT satisfied (fail-closed).
+    if context.client_ip.is_none()
+        && context.env_metadata.is_none()
+        && cond.allowed_ips.is_empty()
+        && cond.allowed_hosts.is_empty()
+    {
+        return true;
+    }
 
     let ip_ok = if cond.allowed_ips.is_empty() {
         true
@@ -1433,6 +1448,98 @@ network:
         // No env_metadata at all → condition cannot be evaluated → NOT satisfied.
         let ctx = Context::default();
         assert!(!location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_typed_client_ip_allowed() {
+        let cond = LocationCondition {
+            allowed_ips: vec!["10.0.0.0/8".to_string()],
+            allowed_hosts: vec![],
+        };
+        let ctx = Context {
+            client_ip: Some("10.1.2.3".to_string()),
+            ..Default::default()
+        };
+        assert!(location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_typed_client_ip_denied() {
+        let cond = LocationCondition {
+            allowed_ips: vec!["10.0.0.0/8".to_string()],
+            allowed_hosts: vec![],
+        };
+        let ctx = Context {
+            client_ip: Some("192.168.1.1".to_string()),
+            ..Default::default()
+        };
+        assert!(!location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_typed_host_allowed() {
+        let cond = LocationCondition {
+            allowed_ips: vec![],
+            allowed_hosts: vec!["github.com".to_string()],
+        };
+        let ctx = Context {
+            host: Some("github.com".to_string()),
+            ..Default::default()
+        };
+        assert!(location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_typed_host_denied() {
+        let cond = LocationCondition {
+            allowed_ips: vec![],
+            allowed_hosts: vec!["github.com".to_string()],
+        };
+        let ctx = Context {
+            host: Some("evil.com".to_string()),
+            ..Default::default()
+        };
+        assert!(!location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_typed_fields_override_metadata() {
+        let cond = LocationCondition {
+            allowed_ips: vec!["10.0.0.0/8".to_string()],
+            allowed_hosts: vec![],
+        };
+        // Typed field says allowed, metadata says denied — typed field wins.
+        let ctx = Context {
+            client_ip: Some("10.1.2.3".to_string()),
+            env_metadata: Some(serde_json::json!({"client_ip": "192.168.1.1"})),
+            ..Default::default()
+        };
+        assert!(location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_typed_ip_none_metadata_has_allowed() {
+        let cond = LocationCondition {
+            allowed_ips: vec!["10.0.0.0/8".to_string()],
+            allowed_hosts: vec![],
+        };
+        // Typed field is None, metadata has allowed IP — metadata is used.
+        let ctx = Context {
+            client_ip: None,
+            env_metadata: Some(serde_json::json!({"client_ip": "10.1.2.3"})),
+            ..Default::default()
+        };
+        assert!(location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_empty_always_satisfied() {
+        let cond = LocationCondition {
+            allowed_ips: vec![],
+            allowed_hosts: vec![],
+        };
+        let ctx = Context::default();
+        assert!(location_condition_satisfied(&cond, &ctx));
     }
 
     #[test]

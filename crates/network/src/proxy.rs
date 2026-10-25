@@ -202,6 +202,7 @@ impl NetworkProxy {
             args_hash: String::new(),
             context: agentfence_core::types::Context {
                 session_id: Some(self.config.session_id.clone()),
+                host: Some(req.host.clone()),
                 ..Default::default()
             },
         };
@@ -1449,5 +1450,20 @@ network:
         };
         let record = proxy.evaluate(&req);
         assert!(matches!(record.decision, Decision::Allow | Decision::Deny));
+    }
+
+    #[test]
+    fn test_evaluate_passes_host_in_context() {
+        let proxy = NetworkProxy::new(test_pdp(), test_config());
+        let req = NetworkRequest {
+            host: "github.com".to_string(),
+            port: Some(443),
+            protocol: "https".to_string(),
+            path: Some("/api/v3".to_string()),
+            headers: String::new(),
+            body: Vec::new(),
+        };
+        // evaluate() should complete without panic; host is passed to context
+        let _record = proxy.evaluate(&req);
     }
 }

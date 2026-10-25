@@ -131,9 +131,8 @@ Approvals are narrow by default. Never promote a one-shot approval into a perman
 - No filesystem enforcement
 - No process enforcement
 - No container/VM isolation
-- Shell command parsing is simplified (not a full shell parser)
+- Shell command parsing is POSIX-compliant (shell-words); complex shell features (process substitution, command substitution) are not fully parsed
 - Network proxy supports HTTP and HTTPS CONNECT tunneling only
-- MCP proxy supports stdio transport only
+- MCP proxy supports stdio and HTTP transports; SSE is disabled (501); authentication not implemented
 - Approval UI is terminal-only
-- No connection pooling in network proxy
-- Rate limiting is per-connection, not global
+- Rate limiting is shared across connections (token bucket via Arc<Mutex<>>); connection pooling with configurable max_size and idle timeout

@@ -133,7 +133,7 @@ component through the public API.
 ## Known Limitations
 
 - Cooperative mode only — no OS-level enforcement
-- Plugin timeout limits wait time but does not terminate a stuck worker thread (no real memory isolation)
+- Plugin timeout limits wait time but does not terminate a stuck worker thread (no real memory isolation). Native plugin worker threads are capped at `MAX_PLUGIN_WORKERS` (16); once the cap is reached, further plugins are skipped fail-closed instead of growing the thread count without bound. Reliable thread termination is not guaranteed by the current architecture.
 - Native plugin sandboxing is cooperative: timeout + worker-thread isolation, but no memory/CPU isolation. WASM plugins are genuinely isolated by the Wasmtime sandbox instead.
 - Container/WSL/VM/OS backends are stubs — not verified for real enforcement
 - Tauri UI is functional but not fully connected to approval/policy operations

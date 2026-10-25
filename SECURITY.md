@@ -52,6 +52,11 @@ These rules may never be broken — not temporarily, not for convenience, not fo
 - Traps, malformed results and fuel exhaustion are explicit execution failures —
   never an Allow
 - Plugin failures are logged and ignored (fail-safe)
+- **Bounded worker concurrency:** native plugin worker threads are capped at
+  `MAX_PLUGIN_WORKERS` (16). A plugin that never returns cannot grow the thread
+  count without bound; once the cap is reached, further plugins are skipped
+  (fail-closed). This bounds resource growth but does **not** terminate a stuck
+  thread — reliable termination is not guaranteed by the current architecture.
 - Plugin API is versioned and stable
 - Fixtures are committed and regenerable via `crates/wasm-plugin/build-fixtures.sh`
 

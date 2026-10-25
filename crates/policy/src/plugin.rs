@@ -20,6 +20,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
@@ -485,6 +486,47 @@ pub struct WasmPluginEntry {
     pub enabled: bool,
 }
 
+/// Maximum number of concurrent native plugin worker threads.
+///
+/// SECURITY: `recv_timeout` bounds how long the caller waits but does not
+/// terminate a worker thread. Without a cap, a plugin that never returns leaks
+/// one thread per call and repeated calls grow the thread count without bound.
+/// This limit turns that growth into a fail-closed skip.
+pub const MAX_PLUGIN_WORKERS: usize = 16;
+
+/// Decrements the active worker counter when a worker thread finishes.
+///
+/// Dropped on normal completion, on timeout (the caller stops waiting but the
+/// worker keeps the guard until it returns), and on panic.
+struct WorkerGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Reserve a native plugin worker slot.
+///
+/// Returns `false` when the concurrency limit is already reached, in which case
+/// the plugin must be skipped (fail-closed) rather than allowed to grow the
+/// thread count without bound. Race-free: the slot is taken first and released
+/// again if the limit was exceeded.
+fn try_acquire_worker(counter: &Arc<AtomicUsize>, plugin_id: &str) -> bool {
+    let previous = counter.fetch_add(1, Ordering::SeqCst);
+    if previous >= MAX_PLUGIN_WORKERS {
+        counter.fetch_sub(1, Ordering::SeqCst);
+        warn!(
+            "Plugin worker limit reached ({}/{}) — skipping plugin {}",
+            MAX_PLUGIN_WORKERS, MAX_PLUGIN_WORKERS, plugin_id
+        );
+        return false;
+    }
+    true
+}
+
 /// Plugin registry.
 ///
 /// Manages registered plugins and their lifecycle.
@@ -495,6 +537,8 @@ pub struct PluginRegistry {
     plugins: HashMap<String, Arc<Mutex<BoxedPlugin>>>,
     configs: HashMap<String, PluginConfig>,
     wasm_plugins: HashMap<String, WasmPluginEntry>,
+    /// Number of native plugin worker threads currently running.
+    active_workers: Arc<AtomicUsize>,
 }
 
 impl PluginRegistry {
@@ -504,7 +548,13 @@ impl PluginRegistry {
             plugins: HashMap::new(),
             configs: HashMap::new(),
             wasm_plugins: HashMap::new(),
+            active_workers: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Number of native plugin worker threads currently running.
+    pub fn active_worker_count(&self) -> usize {
+        self.active_workers.load(Ordering::SeqCst)
     }
 
     /// Register a WebAssembly plugin.
@@ -764,13 +814,23 @@ impl PluginRegistry {
             // timeout so a hostile or buggy plugin cannot stall the PDP.
             // Note: recv_timeout() bounds the wait time but does NOT terminate
             // the worker thread — it only discards the result on timeout.
+            // The worker slot is bounded by MAX_PLUGIN_WORKERS so a plugin that
+            // never returns cannot grow the thread count without bound.
             let plugin_id = id.clone();
             let plugin_clone = Arc::clone(plugin_arc);
             let context_clone = context.clone();
             let timeout_ms = config.timeout_ms;
+            let worker_counter = Arc::clone(&self.active_workers);
+
+            if !try_acquire_worker(&worker_counter, &plugin_id) {
+                continue;
+            }
 
             let (applies_tx, applies_rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
+                let _guard = WorkerGuard {
+                    counter: worker_counter,
+                };
                 let result = match plugin_clone.lock() {
                     Ok(p) => p.applies_to(&context_clone.action),
                     Err(_) => false,
@@ -802,11 +862,20 @@ impl PluginRegistry {
             // timeout so a hostile or buggy plugin cannot stall the PDP.
             // Note: recv_timeout() bounds the wait time but does NOT terminate
             // the worker thread — it only discards the result on timeout.
+            // The worker slot is bounded by MAX_PLUGIN_WORKERS.
             let plugin_clone = Arc::clone(plugin_arc);
             let context_clone = context.clone();
+            let worker_counter = Arc::clone(&self.active_workers);
+
+            if !try_acquire_worker(&worker_counter, &plugin_id) {
+                continue;
+            }
 
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
+                let _guard = WorkerGuard {
+                    counter: worker_counter,
+                };
                 let result = match plugin_clone.lock() {
                     Ok(p) => p.evaluate(&context_clone),
                     Err(_) => Err("plugin mutex poisoned".to_string()),
@@ -1086,6 +1155,66 @@ mod tests {
         }
     }
 
+    /// Slow plugin with a configurable id, so several instances can be
+    /// registered at once to exercise the worker concurrency limit.
+    struct BoundedSlowPlugin {
+        id: String,
+    }
+
+    impl CustomPolicyRule for BoundedSlowPlugin {
+        fn metadata(&self) -> PluginMetadata {
+            PluginMetadata {
+                id: self.id.clone(),
+                name: "Bounded Slow Plugin".to_string(),
+                version: "1.0.0".to_string(),
+                api_version: PLUGIN_API_VERSION,
+                capabilities: vec![PluginCapability::PolicyRule],
+                author: "test".to_string(),
+                description: "Slow plugin with a configurable id".to_string(),
+                fingerprint: "bounded-slow".to_string(),
+            }
+        }
+
+        fn evaluate(&self, _context: &PluginContext) -> Result<PluginResult, String> {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            Ok(PluginResult {
+                decision: None,
+                rule_id: "bounded-slow".to_string(),
+                reason: "should time out".to_string(),
+                evidence: None,
+                risk_level: None,
+                metadata: HashMap::new(),
+            })
+        }
+
+        fn applies_to(&self, _action: &Action) -> bool {
+            true
+        }
+    }
+
+    fn worker_test_context() -> PluginContext {
+        PluginContext {
+            action: Action {
+                id: ActionId::new(),
+                session_id: SessionId::new_from_string("worker-test".to_string()),
+                agent_id: AgentId::new("test"),
+                task_id: None,
+                action_type: agentfence_core::types::ActionType::Shell,
+                tool: "test".to_string(),
+                target: "test".to_string(),
+                args_hash: "hash".to_string(),
+                context: Default::default(),
+            },
+            session_id: "worker-test".to_string(),
+            agent_id: "test".to_string(),
+            task_id: None,
+            cwd: None,
+            repository: None,
+            branch: None,
+            environment: HashMap::new(),
+        }
+    }
+
     #[test]
     fn test_plugin_timeout() {
         let mut registry = PluginRegistry::new();
@@ -1176,6 +1305,76 @@ mod tests {
             results.is_empty(),
             "Plugin with timed-out applies_to() should not return results"
         );
+    }
+
+    #[test]
+    fn test_active_worker_count_starts_at_zero() {
+        let registry = PluginRegistry::new();
+        assert_eq!(registry.active_worker_count(), 0);
+    }
+
+    #[test]
+    fn test_worker_concurrency_is_bounded() {
+        // Register more slow plugins than the worker limit. Each one times out,
+        // but the number of live worker threads must never exceed the cap and
+        // the PDP must never be blocked.
+        let mut registry = PluginRegistry::new();
+        for i in 0..(MAX_PLUGIN_WORKERS + 8) {
+            let plugin = Box::new(BoundedSlowPlugin {
+                id: format!("bounded-slow-{}", i),
+            });
+            let config = PluginConfig {
+                timeout_ms: 30,
+                ..Default::default()
+            };
+            registry.register(plugin, config).unwrap();
+        }
+
+        let context = worker_test_context();
+        let start = std::time::Instant::now();
+        let results = registry.evaluate_all(&context);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "PDP was blocked by slow plugins: {:?}",
+            elapsed
+        );
+        assert!(
+            results.is_empty(),
+            "Timed out plugins must not contribute results"
+        );
+        assert!(
+            registry.active_worker_count() <= MAX_PLUGIN_WORKERS,
+            "live worker threads ({}) exceeded the limit ({})",
+            registry.active_worker_count(),
+            MAX_PLUGIN_WORKERS
+        );
+
+        // The leaked workers eventually return and release their slots.
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        assert_eq!(
+            registry.active_worker_count(),
+            0,
+            "worker counter must return to zero once workers finish"
+        );
+    }
+
+    #[test]
+    fn test_fast_plugin_is_evaluated_under_the_limit() {
+        // The limit must only suppress plugins once it is actually reached; a
+        // responsive plugin must still be evaluated normally.
+        let mut registry = PluginRegistry::new();
+        let config = PluginConfig {
+            timeout_ms: 5000,
+            ..Default::default()
+        };
+        registry.register(Box::new(DenyPlugin), config).unwrap();
+
+        let results = registry.evaluate_all(&worker_test_context());
+
+        assert_eq!(results.len(), 1, "responsive plugin must be evaluated");
+        assert_eq!(results[0].decision, Some(Decision::Deny));
     }
 
     #[test]

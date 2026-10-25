@@ -125,6 +125,7 @@
 - Log tampering (detection)
 - Network rate limiting (shared token bucket)
 - Plugin sandboxing (fingerprint verification, runtime timeout, worker-thread isolation)
+- Native plugin worker concurrency cap (`MAX_PLUGIN_WORKERS`) — bounds thread growth from plugins that never return; does not terminate them
 
 ## Threats AgentFence Can Only Observe
 

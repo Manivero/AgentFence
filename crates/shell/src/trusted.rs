@@ -10,18 +10,35 @@
 //! constructor requires a [`TrustedContextToken`], so a caller that cannot
 //! obtain a token cannot make a location condition pass.
 //!
-//! The token's constructor is private to this module. Tokens are minted only by
-//! [`crate::gateway::ShellGateway::issue_trusted_context_token`], which is
-//! reachable only by code that already holds a `ShellGateway` — a trusted
-//! component (see `SECURITY.md`, Trust Boundaries). An untrusted agent never
-//! holds a gateway, so it never obtains a token.
+//! The token's constructor is private to this module, so the token cannot be
+//! forged directly. It is minted by
+//! [`crate::gateway::ShellGateway::issue_trusted_context_token`], which is `pub`.
+//!
+//! ## What the boundary actually guarantees
+//!
+//! Stated precisely, because the visibility rules alone do not say it:
+//!
+//! - **Untrusted data cannot assert a location.** A command string never
+//!   reaches `evaluate_with_context` with attacker-selected metadata, and
+//!   `cmd.raw` is never parsed for a location. This is the property the API
+//!   exists to provide, and it holds regardless of who holds a gateway.
+//! - **No untrusted component is handed a gateway.** `PluginContext` exposes no
+//!   gateway and no PDP, so a native plugin cannot mint a token. The MCP and
+//!   Network proxies hold a `Pdp` directly and never construct a
+//!   `ShellGateway`.
+//! - **This is not a sandbox for in-process code.** `ShellGateway::new` and
+//!   `Pdp::new` are public, so any code running in the process can construct a
+//!   gateway and mint tokens. In cooperative mode such code can equally bypass
+//!   AgentFence entirely (see `SECURITY.md`, Cooperative Mode). The token stops
+//!   untrusted *data* from asserting a location; it does not stop untrusted
+//!   *code* from acting.
 
 /// Capability token proving the holder is the trusted integration layer.
 ///
 /// SECURITY: the constructor is private to this module, so the token cannot be
 /// forged by other crates. It is a capability marker, not a cryptographic
 /// proof: its strength comes from the fact that only holders of a
-/// `ShellGateway` can mint one.
+/// `ShellGateway` can mint one, and no untrusted component is given a gateway.
 #[derive(Debug, Clone, Copy)]
 pub struct TrustedContextToken(());
 

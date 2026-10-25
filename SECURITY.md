@@ -96,9 +96,8 @@ agent controls. It cannot carry location metadata:
 - verified location data lives in a separate `TrustedShellContext` with
   **private fields** and **no public `Default`**;
 - the only constructor requires a `TrustedContextToken`, whose own constructor
-  is private to `agentfence-shell`. Tokens are minted only by
-  `ShellGateway::issue_trusted_context_token()`, which is reachable only by code
-  that already holds a `ShellGateway` — a trusted component.
+  is private to `agentfence-shell`. Tokens are minted by
+  `ShellGateway::issue_trusted_context_token()`.
 
 Consequences:
 
@@ -113,10 +112,16 @@ Rules:
 
 - **Missing values stay `None`.** No fabricated defaults; the condition fails
   closed.
-- **The token is a capability marker, not a cryptographic proof.** Its strength
-  is that an untrusted agent never holds a `ShellGateway`. Within one process the
-  type system cannot distinguish trusted from untrusted *code* — only trusted
-  from untrusted *data* — and that is exactly what this boundary enforces.
+- **The token is a capability marker, not a cryptographic proof, and it is not a
+  sandbox for in-process code.** `issue_trusted_context_token` is `pub`, and
+  `ShellGateway::new` / `Pdp::new` are public, so any code running in the process
+  can construct a gateway and mint tokens. The boundary that actually holds is
+  that no untrusted component is *given* a gateway: `PluginContext` exposes no
+  gateway or PDP, and the MCP/Network proxies hold a `Pdp` directly. Within one
+  process the type system cannot distinguish trusted from untrusted *code* —
+  only trusted from untrusted *data* — and that is exactly what this boundary
+  enforces. Cooperative-mode code can bypass AgentFence entirely (see
+  Cooperative Mode).
 
 ## Decision Model
 

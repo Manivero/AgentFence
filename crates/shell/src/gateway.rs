@@ -41,10 +41,18 @@ impl ShellGateway {
 
     /// Mint a capability token for the trusted integration layer.
     ///
-    /// SECURITY: the token is what makes it possible to build a
-    /// [`TrustedShellContext`]. Only code that already holds a `ShellGateway` —
-    /// a trusted component — can call this, so an untrusted agent cannot mint a
-    /// token and therefore cannot assert its own `host` or `client_ip`.
+    /// SECURITY: this method is `pub`, so **any crate holding a `ShellGateway`
+    /// can mint a token**. The boundary is architectural, not visibility-based:
+    ///
+    /// - no untrusted component is handed a gateway — `PluginContext` exposes no
+    ///   gateway or PDP, and the MCP/Network proxies hold a `Pdp` directly;
+    /// - `ShellGateway::new` is public, so in-process code that can construct a
+    ///   `Pdp` can also construct a gateway. In cooperative mode such code can
+    ///   bypass AgentFence entirely; this API does not claim otherwise.
+    ///
+    /// What the token does guarantee: untrusted *data* cannot assert a location.
+    /// `evaluate_with_context` is unreachable for a caller that cannot build a
+    /// `TrustedShellContext`, and `cmd.raw` is never parsed for a location.
     pub fn issue_trusted_context_token(&self) -> TrustedContextToken {
         TrustedContextToken::new()
     }
@@ -379,5 +387,45 @@ shell:
         let record = gateway.evaluate(&cmd, &SessionId::new(), &AgentId::new("test"));
         assert_eq!(record.decision, Decision::Deny);
         assert_eq!(record.rule_id, "shell.conditions");
+    }
+
+    #[test]
+    fn test_untrusted_path_ignores_metadata_like_command_content() {
+        // Every plausible way a command could try to smuggle location metadata
+        // into the untrusted path must be ignored. `cmd.raw` is never parsed for
+        // a location and `evaluate()` never reads a trusted context, so none of
+        // these encodings can satisfy the condition.
+        let gateway = ShellGateway::new(pdp_with_host_location());
+        let payloads = [
+            "git status --host=build-server-01",
+            "git status?host=build-server-01",
+            "git status -H build-server-01",
+            "git status {\"host\":\"build-server-01\"}",
+            "git status $HOST=build-server-01",
+            "git status export HOST=build-server-01",
+            "git status --from 10.0.0.5 --to build-server-01",
+            "git status; echo host=build-server-01",
+        ];
+
+        let mut evaluated = 0;
+        for raw in payloads {
+            // Some payloads are not valid shell words; those are skipped, not
+            // silently treated as a pass.
+            let Ok(cmd) = ShellCommand::parse(raw) else {
+                continue;
+            };
+            evaluated += 1;
+            let record = gateway.evaluate(&cmd, &SessionId::new(), &AgentId::new("test"));
+            assert_eq!(
+                record.decision,
+                Decision::Deny,
+                "command {raw:?} must not satisfy a location condition"
+            );
+            assert_eq!(record.rule_id, "shell.conditions");
+        }
+        assert!(
+            evaluated >= 5,
+            "test lost coverage: only {evaluated} payloads were parseable"
+        );
     }
 }

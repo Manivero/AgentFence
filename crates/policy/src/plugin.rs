@@ -99,6 +99,21 @@ impl Default for PluginConfig {
 }
 
 /// Plugin evaluation context.
+///
+/// SECURITY: this is the **only** thing a plugin receives. It exposes no gateway
+/// and no PDP, so a native plugin cannot mint a `TrustedContextToken` and cannot
+/// reach `ShellGateway::evaluate_with_context`. A plugin can only influence a
+/// decision through the values it returns (`Deny`, `Ask`, or `None`).
+///
+/// ```compile_fail
+/// use agentfence_policy::plugin::PluginContext;
+///
+/// fn inspect(ctx: &PluginContext) {
+///     // There is no gateway or PDP handle here: a plugin cannot obtain a
+///     // trusted-context capability.
+///     let _ = ctx.gateway;
+/// }
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginContext {
     pub action: Action,

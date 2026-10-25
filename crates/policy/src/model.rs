@@ -184,33 +184,22 @@ fn ip_matches(ip: &str, allowed: &str) -> bool {
 
 /// Check whether a location condition is satisfied for the given context.
 ///
-/// The client IP and host are read from `context.env_metadata` under the keys
-/// `client_ip` and `host`. Missing metadata means the condition cannot be
-/// evaluated and is therefore NOT satisfied (fail-closed).
+/// SECURITY: location data is read **only** from the typed `Context` fields
+/// `client_ip` and `host`. `Context::env_metadata` is a public, untyped JSON
+/// value: honouring it would let any caller of `Pdp::evaluate` satisfy a
+/// location condition by asserting its own `client_ip`/`host`. Verified
+/// location data must arrive through the typed fields, which a gateway
+/// populates from a trusted source (see
+/// `ShellGateway::evaluate_with_context`).
+///
+/// Missing typed data means the condition cannot be evaluated and is
+/// therefore NOT satisfied (fail-closed).
 pub fn location_condition_satisfied(cond: &LocationCondition, context: &Context) -> bool {
-    // Prefer typed fields; fall back to env_metadata for backward compatibility.
-    let client_ip = context.client_ip.as_deref().or_else(|| {
-        context
-            .env_metadata
-            .as_ref()
-            .and_then(|m| m.get("client_ip"))
-            .and_then(|v| v.as_str())
-    });
-    let host = context.host.as_deref().or_else(|| {
-        context
-            .env_metadata
-            .as_ref()
-            .and_then(|m| m.get("host"))
-            .and_then(|v| v.as_str())
-    });
+    let client_ip = context.client_ip.as_deref();
+    let host = context.host.as_deref();
 
-    // If neither typed fields nor metadata provide the required data,
-    // the condition cannot be evaluated → NOT satisfied (fail-closed).
-    if context.client_ip.is_none()
-        && context.env_metadata.is_none()
-        && cond.allowed_ips.is_empty()
-        && cond.allowed_hosts.is_empty()
-    {
+    // A condition that constrains nothing is vacuously satisfied.
+    if cond.allowed_ips.is_empty() && cond.allowed_hosts.is_empty() {
         return true;
     }
 
@@ -1430,12 +1419,12 @@ network:
             allowed_hosts: vec![],
         };
         let mut ctx = Context {
-            env_metadata: Some(serde_json::json!({"client_ip": "192.168.1.55"})),
+            client_ip: Some("192.168.1.55".to_string()),
             ..Default::default()
         };
         assert!(location_condition_satisfied(&cond, &ctx));
 
-        ctx.env_metadata = Some(serde_json::json!({"client_ip": "10.0.0.1"}));
+        ctx.client_ip = Some("10.0.0.1".to_string());
         assert!(!location_condition_satisfied(&cond, &ctx));
     }
 
@@ -1445,8 +1434,69 @@ network:
             allowed_ips: vec!["192.168.1.0/24".to_string()],
             allowed_hosts: vec![],
         };
-        // No env_metadata at all → condition cannot be evaluated → NOT satisfied.
+        // No typed location data → condition cannot be evaluated → NOT satisfied.
         let ctx = Context::default();
+        assert!(!location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_env_metadata_is_ignored() {
+        // SECURITY: `env_metadata` is a public untyped value. It must never be
+        // able to satisfy a location condition, otherwise any caller of
+        // `Pdp::evaluate` could assert its own trusted host/client IP.
+        let cond = LocationCondition {
+            allowed_ips: vec!["10.0.0.0/8".to_string()],
+            allowed_hosts: vec![],
+        };
+        let ctx = Context {
+            env_metadata: Some(serde_json::json!({"client_ip": "10.1.2.3"})),
+            ..Default::default()
+        };
+        assert!(!location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_env_metadata_host_is_ignored() {
+        let cond = LocationCondition {
+            allowed_ips: vec![],
+            allowed_hosts: vec!["github.com".to_string()],
+        };
+        let ctx = Context {
+            env_metadata: Some(serde_json::json!({"host": "github.com"})),
+            ..Default::default()
+        };
+        assert!(!location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_env_metadata_never_overrides_typed_field() {
+        // Typed field denies; env_metadata asserts an allowed value. The typed
+        // field governs and the metadata is not consulted.
+        let cond = LocationCondition {
+            allowed_ips: vec!["10.0.0.0/8".to_string()],
+            allowed_hosts: vec![],
+        };
+        let ctx = Context {
+            client_ip: Some("192.168.1.1".to_string()),
+            env_metadata: Some(serde_json::json!({"client_ip": "10.1.2.3"})),
+            ..Default::default()
+        };
+        assert!(!location_condition_satisfied(&cond, &ctx));
+    }
+
+    #[test]
+    fn test_location_condition_typed_ip_none_metadata_has_allowed() {
+        // Typed field is None and metadata carries an allowed IP. Metadata is
+        // no longer a location source, so the condition is NOT satisfied.
+        let cond = LocationCondition {
+            allowed_ips: vec!["10.0.0.0/8".to_string()],
+            allowed_hosts: vec![],
+        };
+        let ctx = Context {
+            client_ip: None,
+            env_metadata: Some(serde_json::json!({"client_ip": "10.1.2.3"})),
+            ..Default::default()
+        };
         assert!(!location_condition_satisfied(&cond, &ctx));
     }
 
@@ -1508,25 +1558,10 @@ network:
             allowed_ips: vec!["10.0.0.0/8".to_string()],
             allowed_hosts: vec![],
         };
-        // Typed field says allowed, metadata says denied — typed field wins.
+        // Typed field says allowed; metadata is not a location source at all.
         let ctx = Context {
             client_ip: Some("10.1.2.3".to_string()),
             env_metadata: Some(serde_json::json!({"client_ip": "192.168.1.1"})),
-            ..Default::default()
-        };
-        assert!(location_condition_satisfied(&cond, &ctx));
-    }
-
-    #[test]
-    fn test_location_condition_typed_ip_none_metadata_has_allowed() {
-        let cond = LocationCondition {
-            allowed_ips: vec!["10.0.0.0/8".to_string()],
-            allowed_hosts: vec![],
-        };
-        // Typed field is None, metadata has allowed IP — metadata is used.
-        let ctx = Context {
-            client_ip: None,
-            env_metadata: Some(serde_json::json!({"client_ip": "10.1.2.3"})),
             ..Default::default()
         };
         assert!(location_condition_satisfied(&cond, &ctx));
@@ -1612,7 +1647,7 @@ network:
 "#;
         let policy = parse_policy(yaml).unwrap();
         let ctx = Context {
-            env_metadata: Some(serde_json::json!({"client_ip": "192.168.1.10"})),
+            client_ip: Some("192.168.1.10".to_string()),
             ..Default::default()
         };
         let action = action_with_context(ActionType::Network, "http", "https://github.com/x", ctx);
@@ -1620,4 +1655,36 @@ network:
         assert_eq!(record.decision, Decision::Allow);
         assert_eq!(record.rule_id, "network.allow");
     }
+
+    #[test]
+    fn test_conditions_unsatisfied_when_only_env_metadata_present() {
+        // SECURITY: a location condition must not be satisfiable by the public
+        // untyped `env_metadata` value. Without typed location data the allow
+        // rule must DENY, not fall through to the permissive default.
+        let yaml = r#"
+version: 1
+defaults:
+  shell: deny
+  network: allow
+  mcp: deny
+  filesystem: deny
+network:
+  allow:
+    - github.com
+  conditions:
+    location:
+      allowed_ips:
+        - "192.168.1.0/24"
+"#;
+        let policy = parse_policy(yaml).unwrap();
+        let ctx = Context {
+            env_metadata: Some(serde_json::json!({"client_ip": "192.168.1.10"})),
+            ..Default::default()
+        };
+        let action = action_with_context(ActionType::Network, "http", "https://github.com/x", ctx);
+        let record = evaluate(&policy, &action);
+        assert_eq!(record.decision, Decision::Deny);
+        assert_eq!(record.rule_id, "network.conditions");
+    }
+
 }

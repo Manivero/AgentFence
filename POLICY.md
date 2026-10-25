@@ -147,8 +147,12 @@ them:
   **not** fall through to the default decision — a permissive default would
   silently widen the allow rule.
 - A malformed `HH:MM` value is treated as *not satisfied*.
-- `location` reads `client_ip` and `host` from the action's
-  `context.env_metadata`. If that metadata is absent the condition cannot be
+- `location` reads `client_ip` and `host` from the action's **typed** context
+  fields (`context.client_ip`, `context.host`). These are populated by the
+  gateway that owns the action, from a verified source. `context.env_metadata`
+  is **not** a location source: it is a public, untyped JSON value, so treating
+  it as one would let any caller satisfy a location condition by asserting its
+  own location. If the typed fields are absent the condition cannot be
   evaluated and is treated as *not satisfied*.
 - Time comparisons use **UTC**; per-condition timezones are not yet supported.
 

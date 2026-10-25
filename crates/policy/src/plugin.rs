@@ -126,6 +126,31 @@ pub struct PluginContext {
     pub environment: HashMap<String, String>,
 }
 
+impl PluginContext {
+    /// Build a plugin context from the action being evaluated.
+    ///
+    /// SECURITY: the plugin receives a *copy* of the action plus identifiers.
+    /// It receives no enforcement handle, so it cannot re-enter the PDP or a
+    /// gateway and cannot approve its own action.
+    ///
+    /// `environment` is currently empty: environment data has no verified
+    /// provenance channel yet (see `Context::env_metadata`, which is untrusted
+    /// and is deliberately not consulted). Populating it is deferred rather than
+    /// fed from an unverified source.
+    pub fn from_action(action: &Action) -> Self {
+        Self {
+            action: action.clone(),
+            session_id: action.session_id.0.clone(),
+            agent_id: action.agent_id.0.clone(),
+            task_id: action.task_id.as_ref().map(|t| t.0.clone()),
+            cwd: action.context.cwd.clone(),
+            repository: action.context.repository.clone(),
+            branch: action.context.branch.clone(),
+            environment: HashMap::new(),
+        }
+    }
+}
+
 /// Plugin evaluation result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginResult {

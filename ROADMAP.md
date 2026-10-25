@@ -269,6 +269,11 @@
 - [x] PluginConfig with timeout and memory limits
 - [x] PluginContext and PluginResult for evaluation
 - [x] Unit tests for plugin system
+- [x] Registry consulted by the PDP (`Pdp::with_plugin_registry`): a plugin
+      `Deny`/`Ask` tightens the core decision, a plugin `Allow` is abstained
+- [ ] Plugin configuration surface in `agentfence.yaml` and gateway wiring —
+      **no gateway constructs a registry yet**, so plugin enforcement is not
+      reachable from configuration (see SECURITY.md "Plugin Security")
 
 ### Priority 26 — External Identity Provider Integration ✅
 

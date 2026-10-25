@@ -49,9 +49,18 @@ These rules may never be broken — not temporarily, not for convenience, not fo
   - Module fingerprint verification (SHA-256) over the exact bytes executed
   - Module size limit (10 MB) and bounded action size
 - Plugin results are sanitized: decision 3 (Allow) → abstain; Deny/Ask preserved
+- Plugin results are applied at the PDP: `Pdp::with_plugin_registry` consults the
+  registry and can **tighten** a decision (plugin `Deny`/`Ask` overrides a core
+  `Allow`) but can never loosen it. `Pdp::new` does not consult plugins, so no
+  existing call site changes behaviour.
 - Traps, malformed results and fuel exhaustion are explicit execution failures —
   never an Allow
 - Plugin failures are logged and ignored (fail-safe)
+- **Reachability (known limitation):** the plugin registry is reachable through
+  the PDP, but **no gateway constructs one yet** and `agentfence.yaml` has no
+  plugin section. Plugin enforcement is therefore available to embedders via
+  `Pdp::with_plugin_registry` and is **not reachable from configuration**. Do
+  not assume a plugin's restrictions are in force in a default installation.
 - **Bounded worker concurrency:** native plugin worker threads are capped at
   `MAX_PLUGIN_WORKERS` (16). A plugin that never returns cannot grow the thread
   count without bound; once the cap is reached, further plugins are skipped

@@ -13,7 +13,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use agentfence_core::types::{Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId};
+use agentfence_core::types::{
+    Action, ActionId, ActionType, AgentId, Decision, DecisionRecord, SessionId,
+};
 use agentfence_policy::pdp::Pdp;
 use agentfence_secrets::detector::SecretDetector;
 
@@ -424,33 +426,72 @@ fn handle_connection(
 
     let mut pool = ConnectionPool::new(config.pool_size, config.pool_timeout);
 
-    match record.decision {
-        agentfence_core::types::Decision::Allow => {
+    apply_decision(
+        &mut stream,
+        record.decision,
+        method,
+        url,
+        &host,
+        port,
+        &path,
+        &headers,
+        &record.reason,
+        &record.rule_id,
+        &mut pool,
+    )?;
+
+    Ok(())
+}
+
+/// Apply a network decision to a client connection.
+///
+/// SECURITY: this is the network enforcement boundary. `Allow` opens a
+/// connection to `host:port` and forwards the request; `Deny` and `Ask` write
+/// a `403 Forbidden` to the client and **never** connect to the destination.
+/// An `Ask` never silently becomes an `Allow`.
+///
+/// Split out from `handle_connection` so the side effect is testable against a
+/// controlled local listener instead of a real destination.
+#[allow(clippy::too_many_arguments)]
+fn apply_decision(
+    stream: &mut TcpStream,
+    decision: Decision,
+    method: &str,
+    url: &str,
+    host: &str,
+    port: Option<u16>,
+    path: &str,
+    headers: &str,
+    reason: &str,
+    rule_id: &str,
+    pool: &mut ConnectionPool,
+) -> std::io::Result<()> {
+    match decision {
+        Decision::Allow => {
             info!("ALLOWED: {} {}", method, url);
-            forward_request(&mut stream, &host, port, method, &path, &headers, &mut pool)?;
+            forward_request(stream, host, port, method, path, headers, pool)?;
         }
-        agentfence_core::types::Decision::Deny => {
-            warn!("DENIED: {} {} (rule: {})", method, url, record.rule_id);
+        Decision::Deny => {
+            warn!("DENIED: {} {} (rule: {})", method, url, rule_id);
             let response = format!(
                 "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nDenied by policy: {}",
-                record.reason.len(),
-                record.reason
+                reason.len(),
+                reason
             );
             stream.write_all(response.as_bytes())?;
             stream.flush()?;
         }
-        agentfence_core::types::Decision::Ask => {
-            warn!("ASK: {} {} (rule: {})", method, url, record.reason);
+        Decision::Ask => {
+            warn!("ASK: {} {} (rule: {})", method, url, reason);
             let response = format!(
                 "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nRequires approval: {}",
-                record.reason.len(),
-                record.reason
+                reason.len(),
+                reason
             );
             stream.write_all(response.as_bytes())?;
             stream.flush()?;
         }
     }
-
     Ok(())
 }
 
@@ -957,7 +998,6 @@ fn forward_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentfence_core::types::*;
     use agentfence_policy::parser::parse_policy;
 
     fn test_pdp() -> Pdp {
@@ -1465,5 +1505,186 @@ network:
         };
         // evaluate() should complete without panic; host is passed to context
         let _record = proxy.evaluate(&req);
+    }
+
+    // ── Enforcement side effects (the forwarding boundary) ──────────────
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// A controlled local destination that counts incoming connections.
+    struct CountingDestination {
+        addr: std::net::SocketAddr,
+        connections: Arc<AtomicUsize>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl CountingDestination {
+        /// Bind an ephemeral listener and count connections for `window`.
+        fn start(window: Duration) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let connections = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&connections);
+            let handle = std::thread::spawn(move || {
+                listener.set_nonblocking(true).unwrap();
+                let deadline = Instant::now() + window;
+                while Instant::now() < deadline {
+                    match listener.accept() {
+                        Ok(_stream) => {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                addr,
+                connections,
+                handle: Some(handle),
+            }
+        }
+
+        fn count(&self) -> usize {
+            self.connections.load(Ordering::SeqCst)
+        }
+
+        fn join(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    /// A connected socket pair. The first end plays the proxy, the second is
+    /// the test's view of the client, so the proxy's response can be read.
+    fn socket_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let test_end = TcpStream::connect(addr).unwrap();
+        let (proxy_end, _) = listener.accept().unwrap();
+        test_end
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        proxy_end
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        (proxy_end, test_end)
+    }
+
+    fn read_response(stream: &mut TcpStream) -> String {
+        let mut buf = [0u8; 2048];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    }
+
+    #[test]
+    fn test_denied_request_never_reaches_the_destination() {
+        // SECURITY: observable side effect. A denied request must return 403 to
+        // the client and must never open a connection to the destination.
+        let mut destination = CountingDestination::start(Duration::from_millis(800));
+        let dest_port = destination.addr.port();
+        let (mut stream, mut test_end) = socket_pair();
+        let mut pool = ConnectionPool::new(4, 2);
+
+        apply_decision(
+            &mut stream,
+            Decision::Deny,
+            "GET",
+            "http://127.0.0.1/",
+            "127.0.0.1",
+            Some(dest_port),
+            "/",
+            "Host: 127.0.0.1\r\n",
+            "Denied by policy: host not allowed",
+            "network.deny",
+            &mut pool,
+        )
+        .unwrap();
+
+        let response = read_response(&mut test_end);
+        assert!(response.starts_with("HTTP/1.1 403"), "got: {}", response);
+        assert!(response.contains("Denied by policy"), "got: {}", response);
+
+        destination.join();
+        assert_eq!(
+            destination.count(),
+            0,
+            "a denied request must never connect to the destination"
+        );
+    }
+
+    #[test]
+    fn test_ask_request_never_reaches_the_destination() {
+        // SECURITY: `Ask` must not silently become `Allow`.
+        let mut destination = CountingDestination::start(Duration::from_millis(800));
+        let dest_port = destination.addr.port();
+        let (mut stream, mut test_end) = socket_pair();
+        let mut pool = ConnectionPool::new(4, 2);
+
+        apply_decision(
+            &mut stream,
+            Decision::Ask,
+            "GET",
+            "http://127.0.0.1/",
+            "127.0.0.1",
+            Some(dest_port),
+            "/",
+            "Host: 127.0.0.1\r\n",
+            "Requires approval",
+            "network.ask",
+            &mut pool,
+        )
+        .unwrap();
+
+        let response = read_response(&mut test_end);
+        assert!(response.starts_with("HTTP/1.1 403"), "got: {}", response);
+        assert!(response.contains("Requires approval"), "got: {}", response);
+
+        destination.join();
+        assert_eq!(
+            destination.count(),
+            0,
+            "an Ask must never connect to the destination"
+        );
+    }
+
+    #[test]
+    fn test_allowed_request_reaches_the_destination() {
+        // Control: an `Allow` must actually connect to the destination.
+        let mut destination = CountingDestination::start(Duration::from_millis(1500));
+        let dest_port = destination.addr.port();
+        let (mut stream, _test_end) = socket_pair();
+        let mut pool = ConnectionPool::new(4, 2);
+
+        let result = apply_decision(
+            &mut stream,
+            Decision::Allow,
+            "GET",
+            "http://127.0.0.1/",
+            "127.0.0.1",
+            Some(dest_port),
+            "/",
+            "Host: 127.0.0.1\r\n",
+            "",
+            "network.allow",
+            &mut pool,
+        );
+
+        // The destination accepts the connection but never answers, so the
+        // forward may time out. The side effect under test is the *connection*,
+        // which must have happened.
+        let _ = result;
+        std::thread::sleep(Duration::from_millis(200));
+        destination.join();
+        assert_eq!(
+            destination.count(),
+            1,
+            "an allowed request must connect to the destination"
+        );
     }
 }

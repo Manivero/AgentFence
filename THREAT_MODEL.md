@@ -127,6 +127,10 @@
 - Plugin sandboxing (fingerprint verification, runtime timeout, worker-thread isolation)
 - Native plugin worker concurrency cap (`MAX_PLUGIN_WORKERS`) — bounds thread growth from plugins that never return; does not terminate them
 - WASM plugin sandboxing (Wasmtime 48.0.7, fuel-based interruption, real memory/table limits, empty linker with no WASI or host imports, SHA-256 fingerprint verification, 10 MB module size limit)
+- Plugin results applied at the PDP (`Pdp::with_plugin_registry`) — plugins can only **tighten** a decision; a plugin `Allow` is abstained
+- Case-insensitive shell deny matching — closes case-based deny evasion (Windows executables are case-insensitive)
+- Denied operations never reach their backend: MCP denied/ask writes a JSON-RPC error and nothing to the upstream server's stdin; network denied/ask writes `403` and never opens a destination connection; shell denied exits before `Command::status()` (all three are covered by side-effect tests)
+- Audit argument hashing is a real SHA-256 digest over the evaluated command, and the audit event's `action_id` is the action that was actually evaluated
 
 ## Threats AgentFence Can Only Observe
 

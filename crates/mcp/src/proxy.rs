@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
-use agentfence_core::types::{Action, ActionId, ActionType, AgentId, DecisionRecord, SessionId};
+use agentfence_core::types::{
+    Action, ActionId, ActionType, AgentId, Decision, DecisionRecord, SessionId,
+};
 use agentfence_policy::pdp::Pdp;
 use agentfence_secrets::detector::SecretDetector;
 
@@ -113,6 +115,58 @@ impl McpProxy {
     pub fn is_allowed(&self, call: &McpToolCall) -> bool {
         let record = self.evaluate(call);
         matches!(record.decision, agentfence_core::types::Decision::Allow)
+    }
+
+    /// Apply a decision to an MCP request.
+    ///
+    /// SECURITY: this is the MCP enforcement boundary. `Allow` writes the raw
+    /// request line to the upstream server's stdin; `Deny` and `Ask` write a
+    /// JSON-RPC error to the agent's stdout and **nothing** to the upstream
+    /// server. A blocked request is never shown to the MCP server, and an
+    /// `Ask` never silently becomes an `Allow`.
+    ///
+    /// Split out from the proxy loop so the side effect is testable with an
+    /// in-memory fake upstream instead of a real child process.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_decision(
+        &self,
+        decision: Decision,
+        request_id: &Option<Value>,
+        method: &str,
+        reason: &str,
+        rule_id: &str,
+        line: &str,
+        server_stdin: &mut dyn Write,
+        stdout: &mut dyn Write,
+    ) -> std::io::Result<()> {
+        match decision {
+            Decision::Allow => {
+                info!("ALLOWED: {} (rule: {})", method, rule_id);
+                writeln!(server_stdin, "{}", line)?;
+                server_stdin.flush()?;
+            }
+            Decision::Deny => {
+                warn!("DENIED: {} (rule: {})", method, rule_id);
+                let response = JsonRpcResponse::error(
+                    request_id.clone(),
+                    crate::types::JsonRpcError::INVALID_REQUEST,
+                    format!("Denied by policy: {}", reason),
+                );
+                writeln!(stdout, "{}", serde_json::to_string(&response).unwrap())?;
+                stdout.flush()?;
+            }
+            Decision::Ask => {
+                warn!("ASK: {} (rule: {})", method, reason);
+                let response = JsonRpcResponse::error(
+                    request_id.clone(),
+                    crate::types::JsonRpcError::INVALID_REQUEST,
+                    format!("Requires approval: {}", reason),
+                );
+                writeln!(stdout, "{}", serde_json::to_string(&response).unwrap())?;
+                stdout.flush()?;
+            }
+        }
+        Ok(())
     }
 
     /// Forward a tool call to the MCP server via stdio.
@@ -353,36 +407,19 @@ impl McpProxy {
                             }
                         }
 
-                        match record.decision {
-                            agentfence_core::types::Decision::Allow => {
-                                info!("ALLOWED: {} (rule: {})", call.tool, record.rule_id);
-                                let _ = writeln!(server_stdin, "{}", trimmed);
-                                let _ = server_stdin.flush();
-                            }
-                            agentfence_core::types::Decision::Deny => {
-                                warn!("DENIED: {} (rule: {})", call.tool, record.rule_id);
-                                let response = JsonRpcResponse::error(
-                                    request.id,
-                                    crate::types::JsonRpcError::INVALID_REQUEST,
-                                    format!("Denied by policy: {}", record.reason),
-                                );
-                                let mut out = stdout.lock();
-                                let _ =
-                                    writeln!(out, "{}", serde_json::to_string(&response).unwrap());
-                                let _ = out.flush();
-                            }
-                            agentfence_core::types::Decision::Ask => {
-                                warn!("ASK: {} (rule: {})", call.tool, record.reason);
-                                let response = JsonRpcResponse::error(
-                                    request.id,
-                                    crate::types::JsonRpcError::INVALID_REQUEST,
-                                    format!("Requires approval: {}", record.reason),
-                                );
-                                let mut out = stdout.lock();
-                                let _ =
-                                    writeln!(out, "{}", serde_json::to_string(&response).unwrap());
-                                let _ = out.flush();
-                            }
+                        let mut out = stdout.lock();
+                        if let Err(e) = self.apply_decision(
+                            record.decision,
+                            &request.id,
+                            &call.tool,
+                            &record.reason,
+                            &record.rule_id,
+                            trimmed,
+                            &mut server_stdin,
+                            &mut out,
+                        ) {
+                            error!("Failed to apply decision: {}", e);
+                            continue;
                         }
                     } else {
                         // Non-tool-call requests must also be authorized.
@@ -433,42 +470,19 @@ impl McpProxy {
                                 }
                             }
 
-                            match record.decision {
-                                agentfence_core::types::Decision::Allow => {
-                                    info!("ALLOWED: {} (rule: {})", request.method, record.rule_id);
-                                    let _ = writeln!(server_stdin, "{}", trimmed);
-                                    let _ = server_stdin.flush();
-                                }
-                                agentfence_core::types::Decision::Deny => {
-                                    warn!("DENIED: {} (rule: {})", request.method, record.rule_id);
-                                    let response = JsonRpcResponse::error(
-                                        request.id,
-                                        crate::types::JsonRpcError::INVALID_REQUEST,
-                                        format!("Denied by policy: {}", record.reason),
-                                    );
-                                    let mut out = stdout.lock();
-                                    let _ = writeln!(
-                                        out,
-                                        "{}",
-                                        serde_json::to_string(&response).unwrap()
-                                    );
-                                    let _ = out.flush();
-                                }
-                                agentfence_core::types::Decision::Ask => {
-                                    warn!("ASK: {} (rule: {})", request.method, record.reason);
-                                    let response = JsonRpcResponse::error(
-                                        request.id,
-                                        crate::types::JsonRpcError::INVALID_REQUEST,
-                                        format!("Requires approval: {}", record.reason),
-                                    );
-                                    let mut out = stdout.lock();
-                                    let _ = writeln!(
-                                        out,
-                                        "{}",
-                                        serde_json::to_string(&response).unwrap()
-                                    );
-                                    let _ = out.flush();
-                                }
+                            let mut out = stdout.lock();
+                            if let Err(e) = self.apply_decision(
+                                record.decision,
+                                &request.id,
+                                &request.method,
+                                &record.reason,
+                                &record.rule_id,
+                                trimmed,
+                                &mut server_stdin,
+                                &mut out,
+                            ) {
+                                error!("Failed to apply decision: {}", e);
+                                continue;
                             }
                         }
                     }
@@ -573,7 +587,6 @@ pub fn redact_args_for_audit(args: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentfence_core::types::*;
     use agentfence_policy::parser::parse_policy;
 
     fn test_pdp() -> Pdp {
@@ -813,5 +826,94 @@ mcp:
         assert!(redacted.contains("true"));
         assert!(redacted.contains("[REDACTED:4]"));
         assert!(!redacted.contains("test"));
+    }
+
+    // ── Enforcement side effects (the forwarding boundary) ──────────────
+
+    #[test]
+    fn test_denied_tool_call_is_never_forwarded_to_upstream() {
+        // SECURITY: observable side effect. The upstream MCP server's stdin
+        // must receive nothing when the decision is `Deny`.
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let mut upstream = Vec::new();
+        let mut stdout = Vec::new();
+        let line =
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dangerous"}}"#;
+        proxy
+            .apply_decision(
+                Decision::Deny,
+                &Some(serde_json::json!(1)),
+                "tools/call",
+                "not allowed",
+                "mcp.deny",
+                line,
+                &mut upstream,
+                &mut stdout,
+            )
+            .unwrap();
+        assert!(
+            upstream.is_empty(),
+            "a denied tool call must never reach the upstream MCP server"
+        );
+        let out = String::from_utf8(stdout).unwrap();
+        assert!(out.contains("Denied by policy"), "got: {}", out);
+        assert!(out.contains("not allowed"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_ask_tool_call_is_never_forwarded_to_upstream() {
+        // SECURITY: `Ask` must not silently become `Allow`. The upstream sees
+        // nothing and the agent gets an escalation error.
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let mut upstream = Vec::new();
+        let mut stdout = Vec::new();
+        let line = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"x"}}"#;
+        proxy
+            .apply_decision(
+                Decision::Ask,
+                &Some(serde_json::json!(7)),
+                "tools/call",
+                "needs a human",
+                "mcp.ask",
+                line,
+                &mut upstream,
+                &mut stdout,
+            )
+            .unwrap();
+        assert!(upstream.is_empty(), "an Ask must never be forwarded");
+        let out = String::from_utf8(stdout).unwrap();
+        assert!(out.contains("Requires approval"), "got: {}", out);
+        assert!(!out.contains("Denied by policy"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_allowed_tool_call_is_forwarded_verbatim() {
+        // Control: an `Allow` must forward the exact request line and must not
+        // emit an error response.
+        let proxy = McpProxy::new(test_pdp(), test_config());
+        let mut upstream = Vec::new();
+        let mut stdout = Vec::new();
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe"}}"#;
+        proxy
+            .apply_decision(
+                Decision::Allow,
+                &Some(serde_json::json!(1)),
+                "tools/call",
+                "",
+                "mcp.allow",
+                line,
+                &mut upstream,
+                &mut stdout,
+            )
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(upstream).unwrap().trim(),
+            line,
+            "an allowed call must be forwarded unchanged"
+        );
+        assert!(
+            stdout.is_empty(),
+            "an allowed call must not emit an error response"
+        );
     }
 }

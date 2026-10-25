@@ -151,6 +151,81 @@ component through the public API.
 - **Build:** Success
 - **Date:** 2026-10-22
 
+## Phase 7 — Enforcement Bypass Audit
+
+### Confirmed defects fixed
+
+1. **PDP never consulted the plugin registry.** `Pdp::evaluate` returned the
+   core-policy decision unconditionally; `PluginRegistry` was only reachable
+   from `plugin.rs` and documentation. Plugin restrictions configured by an
+   administrator therefore had no effect.
+   *Fix:* added `Pdp::with_plugin_registry`; the registry can only **tighten**
+   a decision (plugin `Deny`/`Ask` overrides a core `Allow`, plugin `Allow` is
+   abstained). `Pdp::new` is unchanged, so no existing call site changes
+   behaviour. Regression tests prove the tightening, the abstention, and that a
+   plugin cannot grant an Allow.
+   *Still open:* no gateway constructs a registry and `agentfence.yaml` has no
+   plugin section — plugin enforcement is not reachable from configuration.
+
+2. **Location metadata accepted from an untyped channel.**
+   `location_condition_satisfied` fell back to `Context::env_metadata`, a
+   public, untyped JSON value. Any caller of `Pdp::evaluate` could satisfy a
+   location condition by asserting its own `client_ip`/`host`, contradicting
+   the Phase 5 provenance guarantee.
+   *Fix:* location data now comes **only** from the typed `client_ip`/`host`
+   fields, which gateways populate from a verified source. Fail-closed when
+   absent. `POLICY.md` updated.
+
+3. **Case-sensitive shell deny matching.** `deny` entries were matched
+   case-sensitively while executables on Windows are case-insensitive, so
+   `deny: [powershell]` could be evaded by invoking `PowerShell` — and because
+   deny is evaluated before allow, the command then fell through to the allow
+   list.
+   *Fix:* deny matching is case-insensitive, which only ever *strengthens* the
+   deny list. `POLICY.md` documents the exact semantics (substring over the
+   whole command line, evaluated first).
+
+4. **Audit recorded a placeholder hash and an uncorrelated action id.**
+   `agentfence exec` wrote `args_hash: "hash"` (a literal placeholder, useless
+   for reconstruction) and a fresh random `ActionId` unrelated to the action
+   that was evaluated.
+   *Fix:* `args_hash` is now the real SHA-256 digest of the evaluated command
+   (`agentfence_shell::hash::hash_args`, shared with the gateway so the
+   recorded hash cannot drift), and `DecisionRecord` now carries the evaluated
+   `ActionId`, which the audit event records verbatim.
+
+### Enforcement side effects (new tests)
+
+Denied operations must never reach their backend. Three new side-effect tests
+assert the backend, not the decision:
+
+- `agentfence-mcp`: `apply_decision` is the forwarding boundary; `Deny`/`Ask`
+  write a JSON-RPC error and **nothing** to the upstream server's stdin, `Allow`
+  forwards the exact request line.
+- `agentfence-network`: `apply_decision` against a **counting local listener**;
+  `Deny`/`Ask` return `403` and the destination connection count stays 0,
+  `Allow` connects.
+- `agentfence-cli` (end-to-end, real binary): the same command is run under two
+  policies differing only in the allow list; the denied run never creates the
+  sentinel file, the allowed run does. Also asserts the recorded audit event
+  carries the real `args_hash` and a non-empty `action_id`.
+
+### Approval flow (known limitation, not a bypass)
+
+`ApprovalService` is not consulted by any enforcement path. `Ask` resolves to a
+hard deny in the CLI, MCP, and network proxies (fail-closed). `agentfence
+approve` cannot currently authorise an in-flight action because action/session
+correlation is not plumbed to the enforcement layer. Milestone 6's interactive
+approval flow is therefore **not reachable end-to-end**. This is fail-closed,
+not a bypass: nothing is executed on `Ask`.
+
+### ShellGateway is not an execution layer
+
+`ShellGateway` evaluates policy only; execution lives in the CLI/Hermes wrapper.
+Verified, not a defect — but it means shell enforcement is only as strong as
+each caller's "execute or block" step, which is what the CLI side-effect test
+now covers.
+
 ## Security Audit Results
 
 ### Critical Fixes Applied

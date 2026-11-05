@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
+use agentfence_approval::broker::{ApprovalBroker, ApprovalConfig};
 use agentfence_core::types::{
     Action, ActionId, ActionType, AgentId, Decision, DecisionRecord, SessionId,
 };
@@ -80,6 +81,16 @@ impl McpProxy {
     ///
     /// Returns a decision record with full explanation.
     pub fn evaluate(&self, call: &McpToolCall) -> DecisionRecord {
+        self.evaluate_with_action(call).1
+    }
+
+    /// Evaluate a tool call and return the action alongside the decision.
+    ///
+    /// SECURITY: the caller needs the action so that a pending approval request
+    /// is bound to the *same* action that was evaluated. Evaluating twice would
+    /// mint two different action ids and break the correlation between the
+    /// decision, the audit trail and the approval.
+    pub fn evaluate_with_action(&self, call: &McpToolCall) -> (Action, DecisionRecord) {
         let secrets = self.check_secrets(call);
         if !secrets.is_empty() {
             tracing::warn!(
@@ -108,7 +119,8 @@ impl McpProxy {
             },
         };
 
-        self.pdp.evaluate(&action)
+        let record = self.pdp.evaluate(&action);
+        (action, record)
     }
 
     /// Check if a tool call is allowed.
@@ -131,6 +143,8 @@ impl McpProxy {
     fn apply_decision(
         &self,
         decision: Decision,
+        action: &Action,
+        policy_version: &str,
         request_id: &Option<Value>,
         method: &str,
         reason: &str,
@@ -157,6 +171,27 @@ impl McpProxy {
             }
             Decision::Ask => {
                 warn!("ASK: {} (rule: {})", method, reason);
+
+                // SECURITY: an `Ask` must never silently become `Allow` and must
+                // never be forwarded. The request is recorded so an operator can
+                // decide it; until a human approves, the call is refused.
+                //
+                // This proxy is a long-lived stdio transport, so it records the
+                // request and refuses immediately rather than blocking the whole
+                // transport. The operator re-issues the call after deciding.
+                match ApprovalBroker::open(ApprovalConfig::from_env()) {
+                    Ok(broker) => match broker.request(action, reason, policy_version) {
+                        Ok(approval) => warn!(
+                            "Approval requested: {} for action {} - decide with: agentfence approve {} --decision allow",
+                            approval.approval_id,
+                            approval.action_id.0,
+                            approval.approval_id
+                        ),
+                        Err(e) => error!("Failed to record approval request: {}", e),
+                    },
+                    Err(e) => error!("Approval service unavailable: {}", e),
+                }
+
                 let response = JsonRpcResponse::error(
                     request_id.clone(),
                     crate::types::JsonRpcError::INVALID_REQUEST,
@@ -379,7 +414,7 @@ impl McpProxy {
                             server: Some(self.config.server_name.clone()),
                         };
 
-                        let record = self.evaluate(&call);
+                        let (action, record) = self.evaluate_with_action(&call);
 
                         // Record audit event
                         if let Some(ref store) = self.config.audit_store {
@@ -410,6 +445,8 @@ impl McpProxy {
                         let mut out = stdout.lock();
                         if let Err(e) = self.apply_decision(
                             record.decision,
+                            &action,
+                            &record.policy_version,
                             &request.id,
                             &call.tool,
                             &record.reason,
@@ -444,7 +481,7 @@ impl McpProxy {
                                 arguments: request.params.clone().unwrap_or(serde_json::json!({})),
                                 server: Some(self.config.server_name.clone()),
                             };
-                            let record = self.evaluate(&call);
+                            let (action, record) = self.evaluate_with_action(&call);
 
                             // Record audit event
                             if let Some(ref store) = self.config.audit_store {
@@ -473,6 +510,8 @@ impl McpProxy {
                             let mut out = stdout.lock();
                             if let Err(e) = self.apply_decision(
                                 record.decision,
+                                &action,
+                                &record.policy_version,
                                 &request.id,
                                 &request.method,
                                 &record.reason,
@@ -588,6 +627,21 @@ pub fn redact_args_for_audit(args: &Value) -> String {
 mod tests {
     use super::*;
     use agentfence_policy::parser::parse_policy;
+
+    /// A minimal action for the `apply_decision` tests.
+    fn test_action() -> Action {
+        Action {
+            id: ActionId::new(),
+            session_id: SessionId::new(),
+            agent_id: AgentId::new("test"),
+            task_id: None,
+            action_type: ActionType::Mcp,
+            tool: "tools/call".to_string(),
+            target: "unknown".to_string(),
+            args_hash: String::new(),
+            context: Default::default(),
+        }
+    }
 
     fn test_pdp() -> Pdp {
         let yaml = r#"
@@ -842,6 +896,8 @@ mcp:
         proxy
             .apply_decision(
                 Decision::Deny,
+                &test_action(),
+                "v1",
                 &Some(serde_json::json!(1)),
                 "tools/call",
                 "not allowed",
@@ -871,6 +927,8 @@ mcp:
         proxy
             .apply_decision(
                 Decision::Ask,
+                &test_action(),
+                "v1",
                 &Some(serde_json::json!(7)),
                 "tools/call",
                 "needs a human",
@@ -897,6 +955,8 @@ mcp:
         proxy
             .apply_decision(
                 Decision::Allow,
+                &test_action(),
+                "v1",
                 &Some(serde_json::json!(1)),
                 "tools/call",
                 "",

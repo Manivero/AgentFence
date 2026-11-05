@@ -128,59 +128,6 @@ MCP tools are matched by tool name:
 - `github` — Matches `github.create_issue`, etc.
 - `filesystem` — Matches `filesystem.read`, etc.
 
-## Policy Evaluation Order
-
-1. Check deny rules first
-2. Check ask rules (require approval)
-3. Check allow rules
-4. Use default decision
-
-## Advanced Conditions (time / location)
-
-Shell, network and MCP sections accept an optional `conditions` block that
-**restricts** when an `allow` rule applies.
-
-```yaml
-network:
-  allow:
-    - github.com
-  conditions:
-    time:
-      start: "09:00"        # HH:MM, UTC
-      end: "17:00"          # HH:MM, UTC (start > end wraps across midnight)
-      days: [1, 2, 3, 4, 5] # 0=Sunday .. 6=Saturday; empty = every day
-    location:
-      allowed_ips:
-        - "192.168.1.0/24"  # exact IPv4 or CIDR block
-      allowed_hosts:
-        - "github.com"      # case-insensitive exact host match
-```
-
-**Fail-closed semantics.** Conditions can only narrow permissions, never widen
-them:
-
-- If an `allow` rule matches but its conditions are **not** satisfied, the
-  decision is an explicit **DENY** (`rule_id: <section>.conditions`). It does
-  **not** fall through to the default decision — a permissive default would
-  silently widen the allow rule.
-- A malformed `HH:MM` value is treated as *not satisfied*.
-- `location` reads `client_ip` and `host` from the action's **typed** context
-  fields (`context.client_ip`, `context.host`). These are populated by the
-  gateway that owns the action, from a verified source. `context.env_metadata`
-  is **not** a location source: it is a public, untyped JSON value, so treating
-  it as one would let any caller satisfy a location condition by asserting its
-  own location. If the typed fields are absent the condition cannot be
-  evaluated and is treated as *not satisfied*.
-- Time comparisons use **UTC**; per-condition timezones are not yet supported.
-
-## Policy Versioning
-
-Policies have a version number. The version is included in audit events.
-
-## Policy Hash
-
-Policies have a hash computed from their content. The hash is included in audit events.
-
 ## Policy Plugins
 
 `agentfence.yaml` may contain an optional `plugins:` section. It is **not**
@@ -311,3 +258,73 @@ Policies have a version number. The version is included in audit events.
 
 Policies have a hash computed from their content. The hash is included in audit events.
 
+## Approval Lifecycle
+
+An `Ask` decision is a request for a human decision, not a permission. The
+enforcement point records a pending request and **prevents the side effect**;
+nothing is executed or forwarded until a human decides.
+
+```text
+policy returns Ask
+      |
+      v
+pending request recorded  (action id, session, agent, action digest,
+      |                   reason, scope, expiry, status)
+      v
+side effect prevented
+      |
+      v
+human decision  -->  Approved -> consumed once -> execute
+                -->  Rejected / Expired / timeout -> blocked
+```
+
+### Request fields
+
+| Field | Meaning |
+|---|---|
+| `approval_id` | the operator-facing identifier printed by the gateway |
+| `action_id` | the evaluated action, shared with the audit trail |
+| `session_id`, `agent_id` | who asked |
+| `action_digest` | SHA-256 binding over the action (see below) |
+| `tool`, `target` | what is being authorised, for the operator |
+| `reason` | the policy reason for escalating |
+| `scope` | fixed when the request is created |
+| `expires_at` | default 30 minutes (`AGENTFENCE_APPROVAL_TTL_MINUTES`) |
+| `status` | `Pending` / `Approved` / `Rejected` / `Expired` / `Consumed` |
+
+### Binding
+
+`action_digest` covers the action type, tool, target, argument hash, session id
+and agent id. Consuming an approval re-derives the digest, so an approval cannot
+authorise a different command, tool call, target, session or agent.
+
+### Replay prevention
+
+Consumption is a single atomic `Approved` -> `Consumed` transition inside a
+SQLite `BEGIN IMMEDIATE` transaction, so concurrent consumers — including
+separate processes — cannot both spend the same approval. Expired requests
+cannot be decided or consumed, and a pending request can only be decided once.
+
+### Operator commands
+
+```bash
+agentfence approve list [--all]
+agentfence approve show <approval_id>
+agentfence approve <approval_id> --decision allow|deny
+```
+
+The command refuses any `approval_id` that is not in the store. It cannot widen
+the scope of a request: the scope is fixed when the request is created.
+
+### Trust assumption
+
+`agentfence approve` is **not authenticated** — the trust boundary is the
+operator's terminal. The agent can request approval but can never grant it.
+
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTFENCE_APPROVAL_DB` | `<data dir>/approvals.db` | shared approval store |
+| `AGENTFENCE_APPROVAL_TIMEOUT_MS` | `300000` | how long a gateway waits for a human |
+| `AGENTFENCE_APPROVAL_TTL_MINUTES` | `30` | how long a request stays valid |

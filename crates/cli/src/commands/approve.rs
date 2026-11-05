@@ -1,27 +1,34 @@
 //! Approve command implementation.
 //!
-//! Interactive terminal prompt for approving or denying actions.
-//! The agent must never be able to approve its own actions.
+//! This is the operator-facing side of the approval boundary. It is a separate
+//! trust boundary from the agent: the agent can *request* approval, but only this
+//! command can grant or refuse it.
+//!
+//! SECURITY / TRUST ASSUMPTION: this command is **not authenticated**. Anyone
+//! able to run `agentfence approve` in the operator's environment can decide any
+//! pending request. The trust boundary is the terminal itself. The command keys
+//! on the `approval_id` printed by the enforcement path (or listed by
+//! `agentfence approve list`) — it never invents a request, and it refuses to
+//! decide an id that is not in the store.
+//!
+//! SECURITY: the interactive prompt only allows *accept or refuse*. The scope is
+//! fixed when the request is created; this command can never widen a one-shot
+//! approval into a session- or repository-wide permission.
 
 use std::io::{self, Write};
 
-use agentfence_approval::approval::{ApprovalScope, ApprovalService};
-use agentfence_core::types::{ActionId, Decision, SessionId};
-use std::path::PathBuf;
-
-/// Get the default database path for approvals.
-fn get_db_path() -> PathBuf {
-    let data_dir = dirs_next::data_dir()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    data_dir.join("agentfence").join("approvals.db")
-}
+use agentfence_approval::approval::ApprovalService;
+use agentfence_approval::broker::default_approval_db_path;
+use agentfence_core::types::Decision;
 
 /// Execute the approve command.
 ///
-/// If action_id is "list", shows pending approvals.
-/// Otherwise, shows interactive prompt for the specified action.
-pub fn execute(action_id: &str, decision: &str) {
-    let db_path = get_db_path();
+/// - `approve list` lists pending requests (`--all` also shows decided ones).
+/// - `approve show <approval_id>` prints full detail.
+/// - `approve <approval_id> --decision allow|deny|reject` decides a request.
+/// - `approve <approval_id>` without `--decision` prompts interactively.
+pub fn execute(approval_id: &str, decision: &str, show_all: bool) {
+    let db_path = default_approval_db_path();
     if let Some(parent) = db_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -34,125 +41,201 @@ pub fn execute(action_id: &str, decision: &str) {
         }
     };
 
-    // Load existing approvals from DB
     if let Err(e) = service.load_from_db() {
         eprintln!("Failed to load approvals from database: {}", e);
         std::process::exit(1);
     }
 
-    if action_id == "list" {
-        list_pending_approvals(&service);
+    if approval_id == "list" {
+        list_approvals(&service, show_all);
         return;
     }
 
-    // Parse action ID
-    let action_id = ActionId(action_id.to_string());
-    let session_id = SessionId::new();
-
-    // Check if there's a pending approval for this action
-    let record = service.validate(&action_id, &session_id);
-
-    if record.is_none() {
-        println!("AgentFence Approve");
-        println!("=================");
-        println!("No pending approval found for action: {}", action_id);
-        println!();
-        println!("Use 'agentfence approve list' to see pending approvals.");
+    if decision == "show" {
+        show_approval(&service, approval_id);
         return;
     }
 
-    let record = record.unwrap();
-
-    // If decision is specified, apply it directly
     if decision != "ask" {
-        let result = match decision {
-            "allow" => service.approve(&record.approval_id),
-            "deny" => service.deny(&record.approval_id),
+        let approve = match decision {
+            "allow" => true,
+            "deny" | "reject" => false,
             _ => {
                 eprintln!("Invalid decision: {}. Use 'allow' or 'deny'.", decision);
                 std::process::exit(1);
             }
         };
-
-        match result {
-            Ok(r) => {
-                println!("AgentFence Approve");
-                println!("=================");
-                println!("Action:   {}", action_id);
-                println!("Decision: {}", r.decision);
-                println!("Scope:    {:?}", r.scope);
-                println!();
-                println!(
-                    "Approval {}.",
-                    if r.decision == Decision::Allow {
-                        "granted"
-                    } else {
-                        "denied"
-                    }
-                );
-            }
-            Err(e) => {
-                eprintln!("Approval error: {}", e);
-                std::process::exit(1);
-            }
-        }
+        decide(&service, approval_id, approve);
         return;
     }
 
-    // Interactive prompt
-    interactive_prompt(&service, &action_id, &session_id, &record);
+    interactive_prompt(&service, approval_id);
 }
 
-/// List all pending approvals.
-fn list_pending_approvals(service: &ApprovalService) {
-    let pending = service.list_pending();
+/// Decide a request by its approval id.
+fn decide(service: &ApprovalService, approval_id: &str, approve: bool) {
+    // SECURITY: only a request that is actually in the store may be decided. A
+    // caller-supplied id that matches nothing fails closed.
+    let Some(record) = service.refresh(approval_id) else {
+        println!("AgentFence Approve");
+        println!("=================");
+        println!("No approval request found with id: {}", approval_id);
+        println!();
+        println!("Use 'agentfence approve list' to see pending approvals.");
+        return;
+    };
 
-    println!("AgentFence Pending Approvals");
-    println!("============================");
+
+    println!("AgentFence Approve");
+    println!("=================");
+    println!("Approval ID: {}", approval_id);
+    println!("Action:      {}", record.action_id.0);
+    println!("Tool:        {}", record.tool);
+    println!("Target:      {}", record.target);
+    println!("Session:     {}", record.session_id.0);
+    println!("Reason:      {}", record.reason);
+    println!("Issued:      {}", record.issued_at);
+    if let Some(expires) = record.expires_at {
+        println!("Expires:     {}", expires);
+    }
     println!();
 
+    match service.decide(approval_id, approve) {
+        Ok(r) => {
+            println!("Decision: {}", r.decision);
+            println!("Status:   {:?}", r.status);
+            println!();
+            println!(
+                "Approval {}.",
+                if r.decision == Decision::Allow {
+                    "granted"
+                } else {
+                    "denied"
+                }
+            );
+            println!();
+            println!("The agent's gateway consumes it once; the approval cannot be reused.");
+        }
+        Err(e) => {
+            eprintln!("Approval error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Print one request in full.
+fn show_approval(service: &ApprovalService, approval_id: &str) {
+    let Some(record) = service.refresh(approval_id) else {
+        println!("No approval request found with id: {}", approval_id);
+        return;
+    };
+
+
+    println!("AgentFence Approval");
+    println!("===================");
+    println!("Approval ID:  {}", record.approval_id);
+    println!("Status:       {:?}", record.status);
+    println!("Action ID:    {}", record.action_id.0);
+    println!("Session ID:   {}", record.session_id.0);
+    if let Some(agent) = &record.agent_id {
+        println!("Agent ID:     {}", agent.0);
+    }
+    println!("Tool:         {}", record.tool);
+    println!("Target:       {}", record.target);
+    println!("Action hash:  {}", record.action_digest);
+    println!("Reason:       {}", record.reason);
+    println!("Scope:        {:?}", record.scope);
+    println!("Issued:       {}", record.issued_at);
+    println!(
+        "Expires:      {}",
+        record
+            .expires_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_else(|| "never".to_string())
+    );
+    if let Some(consumed) = record.consumed_at {
+        println!("Consumed:     {}", consumed);
+    }
+    println!("Policy:       {}", record.policy_version);
+}
+
+/// List approvals.
+fn list_approvals(service: &ApprovalService, all: bool) {
+    println!("AgentFence Approvals");
+    println!("===================");
+
+    if all {
+        let records = service.list_all();
+        if records.is_empty() {
+            println!();
+            println!("No approval requests recorded.");
+            return;
+        }
+        println!();
+        for record in records {
+            println!(
+                "  {}  [{:?}]  {}  {}",
+                record.approval_id, record.status, record.tool, record.target
+            );
+            println!(
+                "      action: {}  session: {}  issued: {}",
+                record.action_id.0, record.session_id.0, record.issued_at
+            );
+        }
+        println!();
+        println!("Use 'agentfence approve show <approval_id>' for detail.");
+        return;
+    }
+
+    let pending = service.list_pending();
+
+    println!();
     if pending.is_empty() {
         println!("No pending approvals.");
         return;
     }
 
-    for (i, record) in pending.iter().enumerate() {
-        println!("  [{}] Action: {}", i + 1, record.action_id.0);
-        println!("      Approval ID: {}", record.approval_id);
-        println!("      Session:     {}", record.session_id.0);
-        println!("      Scope:       {:?}", record.scope);
-        println!("      Issued:      {}", record.issued_at);
+    for record in pending.iter() {
+        println!("  Approval ID: {}", record.approval_id);
+        println!("  Action:      {}", record.action_id.0);
+        println!("  Tool:        {}", record.tool);
+        println!("  Target:      {}", record.target);
+        println!("  Session:     {}", record.session_id.0);
+        println!("  Reason:      {}", record.reason);
+        println!("  Issued:      {}", record.issued_at);
         if let Some(expires) = record.expires_at {
-            println!("      Expires:     {}", expires);
+            println!("  Expires:     {}", expires);
         }
         println!();
     }
 
-    println!("Use 'agentfence approve <action_id> --decision allow|deny' to decide.");
+    println!("Decide with: agentfence approve <approval_id> --decision allow|deny");
 }
 
 /// Interactive approval prompt.
-fn interactive_prompt(
-    service: &ApprovalService,
-    action_id: &ActionId,
-    session_id: &SessionId,
-    record: &agentfence_approval::approval::ApprovalRecord,
-) {
+fn interactive_prompt(service: &ApprovalService, approval_id: &str) {
+    let Some(record) = service.refresh(approval_id) else {
+        println!("No approval request found with id: {}", approval_id);
+        return;
+    };
+
+
     println!();
     println!("⚠ ACTION REQUIRES APPROVAL");
     println!();
-    println!("Action ID: {}", action_id);
-    println!("Session:   {}", session_id);
-    println!("Scope:     {:?}", record.scope);
-    println!("Issued:    {}", record.issued_at);
+    println!("Approval ID: {}", record.approval_id);
+    println!("Action ID:   {}", record.action_id.0);
+    println!("Tool:        {}", record.tool);
+    println!("Target:      {}", record.target);
+    println!("Session:     {}", record.session_id.0);
+    println!("Reason:      {}", record.reason);
+    println!("Issued:      {}", record.issued_at);
     if let Some(expires) = record.expires_at {
-        println!("Expires:   {}", expires);
+        println!("Expires:     {}", expires);
     }
     println!();
     println!("[1] Deny");
-    println!("[2] Allow once");
-    println!("[3] Allow for session");
-    println!("[4] Allow for repository");
+    println!("[2] Allow");
     println!();
     print!("Choice: ");
     io::stdout().flush().unwrap();
@@ -160,31 +243,20 @@ fn interactive_prompt(
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap();
 
-    let choice = input.trim();
-
-    let (new_decision, new_scope) = match choice {
-        "1" => (Decision::Deny, record.scope.clone()),
-        "2" => (Decision::Allow, ApprovalScope::Once),
-        "3" => (Decision::Allow, ApprovalScope::Session),
-        "4" => (Decision::Allow, ApprovalScope::Repository),
-        _ => {
-            eprintln!("Invalid choice: {}", choice);
+    let approve = match input.trim() {
+        "1" => false,
+        "2" => true,
+        other => {
+            eprintln!("Invalid choice: {}", other);
             std::process::exit(1);
         }
     };
 
-    // Apply the decision
-    let result = if new_decision == Decision::Deny {
-        service.deny(&record.approval_id)
-    } else {
-        service.approve(&record.approval_id)
-    };
-
-    match result {
+    match service.decide(&record.approval_id, approve) {
         Ok(r) => {
             println!();
             println!("Decision: {}", r.decision);
-            println!("Scope:    {:?}", new_scope);
+            println!("Status:   {:?}", r.status);
             println!();
             println!(
                 "Approval {}.",

@@ -13,6 +13,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
+use agentfence_approval::broker::{ApprovalBroker, ApprovalConfig};
 use agentfence_core::types::{
     Action, ActionId, ActionType, AgentId, Decision, DecisionRecord, SessionId,
 };
@@ -355,20 +356,18 @@ fn handle_connection(
     // Read request body with size limit
     let body = read_request_body(&mut reader, &headers, config.max_body_size)?;
 
-    let record = {
-        let action = Action {
-            id: ActionId::new(),
-            session_id: config.session_id.clone(),
-            agent_id: config.agent_id.clone(),
-            task_id: None,
-            action_type: ActionType::Network,
-            tool: "network".to_string(),
-            target: format!("http://{}:{}{}", host, port.unwrap_or(80), path),
-            args_hash: hash_body(&body),
-            context: Default::default(),
-        };
-        pdp.evaluate(&action)
+    let action = Action {
+        id: ActionId::new(),
+        session_id: config.session_id.clone(),
+        agent_id: config.agent_id.clone(),
+        task_id: None,
+        action_type: ActionType::Network,
+        tool: "network".to_string(),
+        target: format!("http://{}:{}{}", host, port.unwrap_or(80), path),
+        args_hash: hash_body(&body),
+        context: Default::default(),
     };
+    let record = pdp.evaluate(&action);
 
     // Record audit event
     if let Some(ref store) = audit_store {
@@ -429,6 +428,8 @@ fn handle_connection(
     apply_decision(
         &mut stream,
         record.decision,
+        &action,
+        &record.policy_version,
         method,
         url,
         &host,
@@ -456,6 +457,8 @@ fn handle_connection(
 fn apply_decision(
     stream: &mut TcpStream,
     decision: Decision,
+    action: &Action,
+    policy_version: &str,
     method: &str,
     url: &str,
     host: &str,
@@ -483,6 +486,27 @@ fn apply_decision(
         }
         Decision::Ask => {
             warn!("ASK: {} {} (rule: {})", method, url, reason);
+
+            // SECURITY: an `Ask` must never silently become `Allow` and must
+            // never be forwarded. The request is recorded so an operator can
+            // decide it; until a human approves, the request is refused.
+            //
+            // This proxy handles one request at a time, so it records the request
+            // and refuses immediately rather than stalling every later request.
+            // The operator re-issues the request after deciding.
+            match ApprovalBroker::open(ApprovalConfig::from_env()) {
+                Ok(broker) => match broker.request(action, reason, policy_version) {
+                    Ok(approval) => warn!(
+                        "Approval requested: {} for action {} - decide with: agentfence approve {} --decision allow",
+                        approval.approval_id,
+                        approval.action_id.0,
+                        approval.approval_id
+                    ),
+                    Err(e) => error!("Failed to record approval request: {}", e),
+                },
+                Err(e) => error!("Approval service unavailable: {}", e),
+            }
+
             let response = format!(
                 "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nRequires approval: {}",
                 reason.len(),
@@ -999,6 +1023,35 @@ fn forward_request(
 mod tests {
     use super::*;
     use agentfence_policy::parser::parse_policy;
+
+    /// A minimal action for the `apply_decision` tests.
+    fn test_action() -> Action {
+        Action {
+            id: ActionId::new(),
+            session_id: SessionId::new(),
+            agent_id: AgentId::new("test"),
+            task_id: None,
+            action_type: ActionType::Network,
+            tool: "network".to_string(),
+            target: "http://127.0.0.1/".to_string(),
+            args_hash: String::new(),
+            context: Default::default(),
+        }
+    }
+
+    /// Point the approval store at a throwaway path.
+    ///
+    /// SECURITY: the `Ask` branch records a pending request. Without this the
+    /// tests would write into the developer's real approval store.
+    fn isolate_approval_store() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let dir =
+                std::env::temp_dir().join(format!("af-net-proxy-tests-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            std::env::set_var("AGENTFENCE_APPROVAL_DB", dir.join("approvals.db"));
+        });
+    }
 
     fn test_pdp() -> Pdp {
         let yaml = r#"
@@ -1594,6 +1647,8 @@ network:
         apply_decision(
             &mut stream,
             Decision::Deny,
+            &test_action(),
+            "v1",
             "GET",
             "http://127.0.0.1/",
             "127.0.0.1",
@@ -1621,6 +1676,7 @@ network:
     #[test]
     fn test_ask_request_never_reaches_the_destination() {
         // SECURITY: `Ask` must not silently become `Allow`.
+        isolate_approval_store();
         let mut destination = CountingDestination::start(Duration::from_millis(800));
         let dest_port = destination.addr.port();
         let (mut stream, mut test_end) = socket_pair();
@@ -1629,6 +1685,8 @@ network:
         apply_decision(
             &mut stream,
             Decision::Ask,
+            &test_action(),
+            "v1",
             "GET",
             "http://127.0.0.1/",
             "127.0.0.1",
@@ -1664,6 +1722,8 @@ network:
         let result = apply_decision(
             &mut stream,
             Decision::Allow,
+            &test_action(),
+            "v1",
             "GET",
             "http://127.0.0.1/",
             "127.0.0.1",

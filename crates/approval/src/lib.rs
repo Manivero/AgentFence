@@ -4,3 +4,4 @@
 //! validation, replay protection. A separate trust boundary.
 
 pub mod approval;
+pub mod broker;

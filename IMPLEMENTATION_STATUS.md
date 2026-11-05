@@ -210,14 +210,68 @@ assert the backend, not the decision:
   sentinel file, the allowed run does. Also asserts the recorded audit event
   carries the real `args_hash` and a non-empty `action_id`.
 
-### Approval flow (known limitation, not a bypass)
+### Approval flow — implemented and verified end-to-end (Phase 9)
 
-`ApprovalService` is not consulted by any enforcement path. `Ask` resolves to a
-hard deny in the CLI, MCP, and network proxies (fail-closed). `agentfence
-approve` cannot currently authorise an in-flight action because action/session
-correlation is not plumbed to the enforcement layer. Milestone 6's interactive
-approval flow is therefore **not reachable end-to-end**. This is fail-closed,
-not a bypass: nothing is executed on `Ask`.
+Previously `ApprovalService` was consulted by no enforcement path: `Ask` resolved
+to a hard deny everywhere, and `agentfence approve` could not authorise an
+in-flight action. That limitation is now **closed**.
+
+`Ask` is wired to a real lifecycle through `agentfence_approval::broker`:
+
+```text
+policy returns Ask
+      |
+      v
+ApprovalBroker::request()      -> pending request in the shared SQLite store
+      |                           (action id, session, agent, action digest,
+      |                            reason, scope, expiry, status)
+      v
+side effect is prevented      -> nothing is executed or forwarded
+      |
+      v
+ApprovalBroker::wait_for()    -> bounded poll (AGENTFENCE_APPROVAL_TIMEOUT_MS)
+      |
+      +-- Approved -> ApprovalService::consume() (atomic, one-shot) -> execute
+      +-- Rejected / Expired / Consumed / timeout -> blocked
+      +-- infrastructure failure -> blocked (fail closed)
+```
+
+Binding and replay prevention:
+
+- Each request stores a SHA-256 **action digest** over the action type, tool,
+  target, argument hash, session id and agent id.
+- `consume()` re-derives the digest from the action being presented. A different
+  command, tool, target, session or agent therefore cannot spend the approval.
+- `consume()` runs inside a SQLite `BEGIN IMMEDIATE` transaction and flips the
+  status from `Approved` to `Consumed` in the same locked section, so concurrent
+  consumers — including separate processes — cannot both spend it.
+- Expired requests cannot be decided or consumed.
+- A pending request can only be decided once.
+
+Entry points:
+
+| Entry point | `Ask` behaviour |
+|---|---|
+| `agentfence exec` | records, waits (bounded), consumes once, executes |
+| Hermes wrapper | records, waits (bounded), consumes once, executes |
+| `agentfence mcp` / `mcp-http` | records, refuses immediately, does **not** forward |
+| `agentfence network` | records, refuses immediately, does **not** connect |
+
+The MCP and network proxies are long-lived and handle one request at a time, so
+they record the request and refuse rather than stalling every later request. The
+operator re-issues the request after deciding; the re-issued request is a new
+action and needs its own approval.
+
+Trust assumption: `agentfence approve` is **not authenticated**. The trust
+boundary is the operator's terminal. The command keys on the `approval_id`
+printed by the enforcement path (or listed by `agentfence approve list`) and
+refuses any id that is not in the store. It can accept or refuse a request, but
+it cannot widen a one-shot approval into a session- or repository-wide one — the
+scope is fixed when the request is created.
+
+Audit: `approval.request`, `approval.decided`, `approval.consumed` and the
+executed action are all recorded, and share the same `action_id`, so the trail
+shows what was asked, who decided, and what was authorised.
 
 ### ShellGateway is not an execution layer
 
@@ -360,6 +414,67 @@ file that must not be created when a plugin denies).
   entry point must use `build_pdp`.
 - `agentguard policy check` validates the policy but does not load plugins.
 
+## Phase 9 — End-to-End Approval Flow
+
+### Status: IMPLEMENTED AND VERIFIED
+
+**Goal:** make `Ask` reach a real human decision that authorises only the exact
+action requested — never silently becoming `Allow`.
+
+### Before
+
+- `ApprovalService` was consulted by **no** enforcement path.
+- `Ask` resolved to a hard deny in the CLI, MCP and network proxies.
+- `agentfence approve <action_id>` could not work: it looked up by *action* id
+  while the store was keyed by *approval* id, used a freshly minted session id,
+  and no enforcement path ever created a pending request.
+- `approve` set `Decision::Allow` permanently — an approval could be replayed
+  indefinitely.
+- The interactive prompt offered "Allow for session" / "Allow for repository",
+  which widened a one-shot approval after the fact.
+- An approved execution was not audited as its own outcome.
+
+### After
+
+- `agentfence-approval::broker` is the single enforcement-side boundary:
+  `request()` records a pending request, `wait_for()` polls with a bounded
+  timeout, `consume()` spends the approval atomically.
+- `ApprovalRecord` gained a lifecycle `status` (`Pending` / `Approved` /
+  `Rejected` / `Expired` / `Consumed`), an action digest, agent id, tool,
+  target, reason and `consumed_at`.
+- `Action::digest()` (agentfence-core) is the SHA-256 binding over action type,
+  tool, target, argument hash, session id and agent id.
+- State transitions are atomic: the SQLite path uses `BEGIN IMMEDIATE`, so
+  concurrent consumers — including separate processes — cannot both spend an
+  approval.
+- Entry points wired: `agentfence exec` and the Hermes wrapper (record, bounded
+  wait, consume once, execute); `agentfence mcp`/`mcp-http` and
+  `agentfence network` (record, refuse immediately, never forward).
+- CLI: `agentfence approve list [--all]`, `show <approval_id>`,
+  `<approval_id> --decision allow|deny|reject`, and an interactive prompt that
+  can only accept or refuse.
+- Audit: `approval.request`, `approval.decided`, `approval.consumed` plus the
+  executed action, all sharing the same `action_id`.
+
+### Tests
+
+`crates/approval/tests/lifecycle.rs` (16) and `crates/cli/tests/approval_flow.rs`
+(9) cover: pending recorded and not executed; approval enables the action;
+rejection blocks; a modified command cannot be authorised; cross-session and
+cross-agent rejected; expiry fails closed; concurrent consumption executes
+exactly once (in-process and cross-connection); unknown/malformed/duplicate/
+already-consumed ids fail closed; storage failure fails closed; the audit trail
+correlates policy decision, approval and outcome; plain allow/deny unchanged; a
+WASM plugin `Ask` enters the same lifecycle.
+
+### Known limitations
+
+- `agentfence approve` is **not authenticated**; the trust boundary is the
+  operator's terminal.
+- MCP and network record the request and refuse without waiting; the operator
+  re-issues the request, which is a new action needing its own approval.
+- Approval requests are `Once` scoped; wider scopes are not requested by any
+  gateway.
 
 ## Self-Review Gate (Section 39)
 
@@ -381,4 +496,4 @@ file that must not be created when a plugin denies).
 | Did adversarial tests run? | ✅ Yes — bypass attempts, path traversal, etc. |
 | Did unrelated files change? | ✅ No — changes only in relevant files |
 | Does the repository still build? | ✅ Yes — cargo build successful |
-| Do all tests pass? | ✅ Yes — 457 tests passing |
+| Do all tests pass? | ✅ Yes — 482 tests passing |

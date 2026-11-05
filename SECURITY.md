@@ -56,11 +56,29 @@ These rules may never be broken — not temporarily, not for convenience, not fo
 - Traps, malformed results and fuel exhaustion are explicit execution failures —
   never an Allow
 - Plugin failures are logged and ignored (fail-safe)
-- **Reachability (known limitation):** the plugin registry is reachable through
-  the PDP, but **no gateway constructs one yet** and `agentfence.yaml` has no
-  plugin section. Plugin enforcement is therefore available to embedders via
-  `Pdp::with_plugin_registry` and is **not reachable from configuration**. Do
-  not assume a plugin's restrictions are in force in a default installation.
+- **Configuration surface:** `agentfence.yaml` has an optional `plugins:` section.
+  Every enforcement entry point (CLI `exec`, `run`, `mcp`, `network`, and the
+  Hermes wrapper) builds its PDP through
+  `agentfence_policy::plugin_loader::build_pdp`, so configured plugins are
+  consulted on every gateway rather than in one of them. See
+  `examples/plugins.yaml` and `POLICY.md` "Policy Plugins".
+- **Load failures are fatal, not silent:** a configured, enabled plugin that is
+  missing, unreadable, or whose fingerprint does not match fails the whole load
+  and the process refuses to start enforcement. Starting with a partially loaded
+  plugin set would silently drop the restrictions an administrator configured,
+  so this fails closed with the plugin id in the error message.
+- **Native plugins follow a distinct trust model:** the `native:` section may
+  only *reference* a plugin that the embedding application registered
+  programmatically before the policy was loaded. `agentfence.yaml` can never
+  introduce native code, and an id the host did not register is a validation
+  error. No production entry point registers native plugins today, so a
+  `native:` entry fails closed rather than being ignored.
+- **Disabled plugins do not execute:** an entry with `enabled: false` is never
+  registered, so it cannot influence a decision at all.
+- **Per-plugin resource limits:** `max_memory_mb` on a WebAssembly entry is
+  enforced by the sandbox (`Store::limiter`) over the exact bytes compiled.
+  Fuel, module size (10 MB) and action size are sandbox-global and are not
+  per-plugin configurable yet.
 - **Bounded worker concurrency:** native plugin worker threads are capped at
   `MAX_PLUGIN_WORKERS` (16). A plugin that never returns cannot grow the thread
   count without bound; once the cap is reached, further plugins are skipped
@@ -172,6 +190,69 @@ Verification: `agentfence audit verify --session <id>`
 Output: VALID / INVALID / INCOMPLETE
 
 **Note:** Audit logs are tamper-evident, not tamper-proof. The underlying storage remains user-modifiable.
+
+## Approval Model
+
+Approval is a separate trust boundary from policy. Policy decides whether a
+human is *needed*; a human decides whether the action proceeds.
+
+### Lifecycle
+
+```text
+Pending -> Approved -> Consumed     (one execution)
+Pending -> Rejected
+Pending -> Approved -> Expired      (never executed)
+```
+
+A request is created by the enforcement point when the PDP returns `Ask`. The
+side effect is prevented while it is outstanding.
+
+### Binding
+
+Every request stores a SHA-256 digest of the action being authorised — action
+type, tool, target, argument hash, session id and agent id. Consuming the
+approval re-derives that digest, so an approval cannot authorise a different
+command, tool call, target, session or agent.
+
+### Replay and atomicity
+
+- Consumption is a single atomic transition (`Approved` -> `Consumed`) inside a
+  SQLite `BEGIN IMMEDIATE` transaction. Concurrent consumers, including separate
+  processes, cannot both spend the same approval.
+- Expired requests cannot be decided or consumed.
+- A pending request can only be decided once.
+
+### CLI
+
+```bash
+agentfence approve list              # pending requests
+agentfence approve list --all        # decided, expired and consumed too
+agentfence approve show <approval_id>
+agentfence approve <approval_id> --decision allow
+agentfence approve <approval_id> --decision deny
+agentfence approve <approval_id>     # interactive
+```
+
+The command keys on the `approval_id` printed by the enforcement path. It refuses
+any id that is not in the store. It can accept or refuse a request, but it cannot
+widen the scope: the scope is fixed when the request is created.
+
+### Trust assumption
+
+`agentfence approve` is **not authenticated**. The trust boundary is the
+operator's terminal — anyone able to run it in that environment can decide any
+pending request.
+
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTFENCE_APPROVAL_DB` | `<data dir>/approvals.db` | shared approval store |
+| `AGENTFENCE_APPROVAL_TIMEOUT_MS` | `300000` | how long a gateway waits for a human |
+| `AGENTFENCE_APPROVAL_TTL_MINUTES` | `30` | how long a request stays valid |
+
+The broker and the CLI must agree on `AGENTFENCE_APPROVAL_DB`, otherwise a
+decision would never be seen.
 
 ## Approval Model
 

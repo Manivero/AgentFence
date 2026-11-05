@@ -192,6 +192,27 @@ pub struct Action {
     pub context: Context,
 }
 
+impl Action {
+    /// Canonical SHA-256 digest of the *content* of this action.
+    ///
+    /// SECURITY: this is what an approval is bound to. The digest covers the
+    /// action type, tool, target, argument hash, session id and agent id.
+    ///
+    /// The digest is used to bind an approval to the exact action it authorises.
+    pub fn digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(self.action_type.to_string().as_bytes());
+        hasher.update(self.tool.as_bytes());
+        hasher.update(self.target.as_bytes());
+        hasher.update(self.args_hash.as_bytes());
+        hasher.update(self.session_id.0.as_bytes());
+        hasher.update(self.agent_id.0.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+}
+
 // ─── Context ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

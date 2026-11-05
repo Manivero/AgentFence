@@ -96,24 +96,49 @@ impl ShellGateway {
         session_id: &SessionId,
         agent_id: &AgentId,
     ) -> DecisionRecord {
-        let secrets = self.check_secrets(cmd);
-        if !secrets.is_empty() {
-            tracing::warn!(
-                "Shell command contains {} secret(s): {:?}",
-                secrets.len(),
-                secrets
-                    .iter()
-                    .map(|s| s.category.clone())
-                    .collect::<Vec<_>>()
-            );
-        }
+        self.check_secrets(cmd);
 
         // Verified location data. Sourced exclusively from the trusted context;
         // `cmd.raw` is never inspected for a location.
         let client_ip = trusted.client_ip().map(str::to_string);
         let host = trusted.host().map(str::to_string);
 
-        let action = Action {
+        let action = Self::build_action(cmd, client_ip, host, session_id, agent_id);
+        self.pdp.evaluate(&action)
+    }
+
+    /// Build the action that [`Self::evaluate_action`] evaluates.
+    ///
+    /// The caller can evaluate the returned action directly, so a policy
+    /// decision and an approval request are bound to the *same* action object.
+    /// Building the action twice would mint two different action ids and break
+    /// the correlation between the decision, the audit trail and any approval.
+    pub fn action_for(
+        &self,
+        cmd: &ShellCommand,
+        session_id: &SessionId,
+        agent_id: &AgentId,
+    ) -> Action {
+        self.check_secrets(cmd);
+        // Caller-controlled metadata is never trusted here: this path uses the
+        // untrusted (empty) context, exactly like `evaluate`.
+        Self::build_action(cmd, None, None, session_id, agent_id)
+    }
+
+    /// Evaluate a pre-built action.
+    pub fn evaluate_action(&self, action: &Action) -> DecisionRecord {
+        self.pdp.evaluate(action)
+    }
+
+    /// Construct the shell action for a command.
+    fn build_action(
+        cmd: &ShellCommand,
+        client_ip: Option<String>,
+        host: Option<String>,
+        session_id: &SessionId,
+        agent_id: &AgentId,
+    ) -> Action {
+        Action {
             id: ActionId::new(),
             session_id: session_id.clone(),
             agent_id: agent_id.clone(),
@@ -131,9 +156,7 @@ impl ShellGateway {
                 host,
                 ..Default::default()
             },
-        };
-
-        self.pdp.evaluate(&action)
+        }
     }
 
     /// Check if a shell command is allowed.

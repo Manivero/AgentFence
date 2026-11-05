@@ -5,10 +5,11 @@
 
 use std::process::Command;
 
+use agentfence_approval::broker::{ApprovalBroker, ApprovalConfig};
 use agentfence_core::types::{AgentId, SessionId};
 use agentfence_policy::{parser::load_policy, pdp::Pdp, plugin_loader};
 use agentfence_shell::{command::ShellCommand, gateway::ShellGateway};
-use tracing::info;
+use tracing::{error, info};
 
 /// Hermes wrapper for AgentFence.
 ///
@@ -39,7 +40,10 @@ impl HermesWrapper {
         let cmd = ShellCommand::parse(command)?;
         let gateway = ShellGateway::new(self.pdp.clone());
 
-        let record = gateway.evaluate(&cmd, &self.session_id, &self.agent_id);
+        // SECURITY: the action is built once and shared by the policy decision
+        // and any approval request, so they are bound to the same action id.
+        let action = gateway.action_for(&cmd, &self.session_id, &self.agent_id);
+        let record = gateway.evaluate_action(&action);
 
         match record.decision {
             agentfence_core::types::Decision::Allow => {
@@ -56,7 +60,53 @@ impl HermesWrapper {
             }
             agentfence_core::types::Decision::Ask => {
                 info!("ASK: {} (rule: {})", command, record.reason);
-                Ok(false)
+
+                // SECURITY: an `Ask` must never silently become `Allow`. The
+                // pending request is recorded, the command is NOT executed, and
+                // it runs only if a human approves this exact action and the
+                // approval is consumed exactly once.
+                let broker = match ApprovalBroker::open(ApprovalConfig::from_env()) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        error!("Approval service unavailable: {}", e);
+                        return Ok(false);
+                    }
+                };
+
+                let approval = match broker.request(&action, &record.reason, &record.policy_version)
+                {
+                    Ok(a) => a,
+                    Err(e) => {
+                        error!("Failed to record approval request: {}", e);
+                        return Ok(false);
+                    }
+                };
+
+                info!(
+                    "Approval requested: {} for action {}",
+                    approval.approval_id, approval.action_id.0
+                );
+
+                match broker.wait_for(&approval.approval_id, &action, None) {
+                    Ok(true) => {
+                        info!("APPROVED: {} (rule: {})", command, record.rule_id);
+                        let status = Command::new(&cmd.executable)
+                            .args(&cmd.arguments)
+                            .status()?;
+                        Ok(status.success())
+                    }
+                    Ok(false) => {
+                        info!(
+                            "APPROVAL NOT GRANTED: {} (rule: {})",
+                            command, record.rule_id
+                        );
+                        Ok(false)
+                    }
+                    Err(e) => {
+                        error!("Approval failed: {}", e);
+                        Ok(false)
+                    }
+                }
             }
         }
     }

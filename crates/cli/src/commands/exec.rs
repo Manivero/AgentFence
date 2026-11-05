@@ -2,8 +2,9 @@
 
 use std::process::Command;
 
-use agentfence_core::types::{AgentId, Decision, SessionId};
-use agentfence_policy::{parser::load_policy, pdp::Pdp};
+use agentfence_approval::broker::{ApprovalBroker, ApprovalConfig};
+use agentfence_core::types::{ActionId, AgentId, Decision, RiskLevel, SessionId};
+use agentfence_policy::{parser::load_policy, plugin_loader};
 use agentfence_shell::{command::ShellCommand, gateway::ShellGateway};
 use tracing::{error, info};
 
@@ -18,7 +19,13 @@ pub fn execute(policy_path: &str, command: &[String]) {
         }
     };
 
-    let pdp = Pdp::new(policy);
+    let pdp = match plugin_loader::build_pdp(policy, Vec::new()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to load policy plugins: {}", e);
+            std::process::exit(1);
+        }
+    };
     let gateway = ShellGateway::new(pdp);
 
     let raw_cmd = command.join(" ");
@@ -33,7 +40,10 @@ pub fn execute(policy_path: &str, command: &[String]) {
     let session_id = SessionId::new();
     let agent_id = AgentId::new("cli");
 
-    let record = gateway.evaluate(&cmd, &session_id, &agent_id);
+    // SECURITY: the action is built once and used for both the policy decision
+    // and any approval request, so the two are bound to the same action id.
+    let action = gateway.action_for(&cmd, &session_id, &agent_id);
+    let record = gateway.evaluate_action(&action);
 
     println!("AgentFence Exec");
     println!("===============");
@@ -43,37 +53,23 @@ pub fn execute(policy_path: &str, command: &[String]) {
     println!("Reason:   {}", record.reason);
     println!();
 
-    // Record audit event
+    // Record audit event for the *policy* decision.
     //
     // SECURITY: the audit event must reference the action that was actually
     // evaluated, and must hash the arguments rather than recording a
     // placeholder. `record.action_id` is stamped by the PDP from the evaluated
     // action; minting a fresh id here would leave the audit trail unable to
     // correlate the event with the decision (or with an approval record).
-    let db_path = db::get_db_path();
-    let _ = db::ensure_db_dir(&db_path);
-    if let Ok(store) = agentfence_audit::sqlite_store::SqliteStore::new(&db_path) {
-        let event = agentfence_audit::event::AuditEvent::new(
-            session_id.clone(),
-            agent_id.clone(),
-            None,
-            record.action_id.clone(),
-            None,
-            "shell",
-            "shell",
-            &raw_cmd,
-            agentfence_shell::hash::hash_args(&raw_cmd),
-            record.decision,
-            record.risk_level,
-            &record.rule_id,
-            &record.policy_version,
-            "",
-            "",
-        );
-        if let Err(e) = store.record_event(&event) {
-            error!("Audit write failed: {}", e);
-        }
-    }
+    write_audit(
+        &session_id,
+        &agent_id,
+        &record.action_id,
+        &raw_cmd,
+        record.decision,
+        record.risk_level,
+        &record.rule_id,
+        &record.policy_version,
+    );
 
     match record.decision {
         Decision::Allow => {
@@ -93,13 +89,141 @@ pub fn execute(policy_path: &str, command: &[String]) {
             }
         }
         Decision::Deny => {
-            eprintln!("Command denied by policy");
+            // P4: a bare `DENIED` is not acceptable. Name the rule that decided
+            // and the reason, so a denial is reconstructible from the terminal.
+            eprintln!(
+                "Command denied by policy: rule '{}' - {}",
+                record.rule_id, record.reason
+            );
             std::process::exit(1);
         }
         Decision::Ask => {
-            eprintln!("Command requires approval");
-            eprintln!("Use: agentfence approve <action_id>");
-            std::process::exit(1);
+            // SECURITY: an `Ask` must never silently become `Allow`. The pending
+            // request is recorded, the command is NOT executed, and the action is
+            // only executed if the operator approves this exact action and the
+            // approval is consumed exactly once.
+            eprintln!(
+                "Command requires approval: rule '{}' - {}",
+                record.rule_id, record.reason
+            );
+
+            let broker = match ApprovalBroker::open(ApprovalConfig::from_env()) {
+                Ok(b) => b,
+                Err(e) => {
+                    // An approval infrastructure failure must never become an
+                    // implicit Allow.
+                    eprintln!("Approval service unavailable: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            let approval = match broker.request(&action, &record.reason, &record.policy_version) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("Failed to record approval request: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            eprintln!();
+            eprintln!("Approval requested: {}", approval.approval_id);
+            eprintln!("  Action:   {}", approval.action_id.0);
+            eprintln!("  Session:  {}", approval.session_id.0);
+            eprintln!(
+                "  Expires:  {}",
+                approval
+                    .expires_at
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| "never".to_string())
+            );
+            eprintln!();
+            eprintln!(
+                "Approve with: agentfence approve {} --decision allow",
+                approval.approval_id
+            );
+
+            match broker.wait_for(&approval.approval_id, &action, None) {
+                Ok(true) => {
+                    // SECURITY: the approved execution must be audited as its own
+                    // outcome, correlated with the policy's `Ask` event through
+                    // the same action id. Without this the audit trail would show
+                    // an approval but never record what it authorised.
+                    write_audit(
+                        &session_id,
+                        &agent_id,
+                        &record.action_id,
+                        &raw_cmd,
+                        Decision::Allow,
+                        record.risk_level,
+                        &record.rule_id,
+                        &record.policy_version,
+                    );
+                    println!("Approved by operator; executing.");
+                    info!("Executing approved command: {}", raw_cmd);
+                    let status = Command::new(&cmd.executable).args(&cmd.arguments).status();
+                    match status {
+                        Ok(s) => {
+                            if !s.success() {
+                                std::process::exit(s.code().unwrap_or(1));
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to execute command: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Ok(false) => {
+                    eprintln!("Approval not granted within the timeout; command blocked.");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Approval failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+}
+
+/// Write one audit event for a shell action.
+///
+/// SECURITY: the event references the *evaluated* action id, so the policy
+/// decision and any later approved execution of the same action can be
+/// correlated. Arguments are hashed, never recorded raw.
+#[allow(clippy::too_many_arguments)]
+fn write_audit(
+    session_id: &SessionId,
+    agent_id: &AgentId,
+    action_id: &ActionId,
+    raw_cmd: &str,
+    decision: Decision,
+    risk_level: RiskLevel,
+    rule_id: &str,
+    policy_version: &str,
+) {
+    let db_path = db::get_db_path();
+    let _ = db::ensure_db_dir(&db_path);
+    if let Ok(store) = agentfence_audit::sqlite_store::SqliteStore::new(&db_path) {
+        let event = agentfence_audit::event::AuditEvent::new(
+            session_id.clone(),
+            agent_id.clone(),
+            None,
+            action_id.clone(),
+            None,
+            "shell",
+            "shell",
+            raw_cmd,
+            agentfence_shell::hash::hash_args(raw_cmd),
+            decision,
+            risk_level,
+            rule_id,
+            policy_version,
+            "",
+            "",
+        );
+        if let Err(e) = store.record_event(&event) {
+            error!("Audit write failed: {}", e);
         }
     }
 }

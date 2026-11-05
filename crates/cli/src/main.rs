@@ -72,13 +72,16 @@ enum Commands {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
-    /// Approve an action
+    /// Decide or inspect an approval request
     Approve {
-        /// Action ID (or "list" to show pending approvals)
-        action_id: String,
-        /// Decision (allow/deny). If not specified, shows interactive prompt.
+        /// Approval ID (or "list" to show pending approvals)
+        approval_id: String,
+        /// Decision (allow/deny/reject/show). If not specified, shows interactive prompt.
         #[arg(short, long)]
         decision: Option<String>,
+        /// With "list": also show decided, expired and consumed requests
+        #[arg(long)]
+        all: bool,
     },
     /// Policy commands
     Policy {
@@ -185,11 +188,12 @@ fn main() {
             commands::logs::execute(session, &format);
         }
         Commands::Approve {
-            action_id,
+            approval_id,
             decision,
+            all,
         } => {
             let decision = decision.as_deref().unwrap_or("ask");
-            commands::approve::execute(&action_id, decision);
+            commands::approve::execute(&approval_id, decision, all);
         }
         Commands::Policy { command } => match command {
             PolicyCommands::Check { path } => {

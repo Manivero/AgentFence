@@ -10,6 +10,7 @@ repository.workspace = true
 agentfence-core = { path = "../core" }
 agentfence-policy = { path = "../policy" }
 agentfence-shell = { path = "../shell" }
+agentfence-approval = { path = "../approval" }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }

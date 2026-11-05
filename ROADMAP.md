@@ -66,6 +66,19 @@
 - [x] Gateway integration
 - [x] Tests
 
+## Approval Flow — End-to-End ✅
+
+- [x] `Ask` records a pending request and prevents the side effect
+- [x] Action digest binds each approval to the exact action
+- [x] Atomic, single-use consumption (`BEGIN IMMEDIATE`)
+- [x] Expiry, rejection, unknown and already-consumed ids fail closed
+- [x] Cross-session and cross-agent approvals rejected
+- [x] `agentfence exec` and Hermes wrapper: bounded wait, consume once, execute
+- [x] MCP and network proxies: record and refuse without forwarding
+- [x] `agentfence approve list [--all] | show | allow | deny`
+- [x] Audit trail correlates policy decision, approval decision and outcome
+- [x] WASM plugin `Ask` enters the same lifecycle
+
 ## Phase 9 — Hermes ✅
 
 - [x] Working Hermes wrapper

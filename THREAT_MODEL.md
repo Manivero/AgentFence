@@ -68,19 +68,34 @@
 
 ### Approval Abuse
 
-**Description:** An agent attempts to approve its own actions or replay approvals.
+**Description:** An agent attempts to approve its own actions, forge an approval,
+replay one, or spend it on a different action.
 
 **MVP Mitigation:** Approval service is separate, replay protection, expiry.
 
-**Residual Risk:** None — agent cannot access approval service.
+**Phase 9 mitigation:** the enforcement point records the request and never
+executes on `Ask`; every request carries an action digest that `consume()`
+re-derives; consumption is an atomic `Approved -> Consumed` transition inside a
+SQLite `BEGIN IMMEDIATE` transaction, so concurrent consumers cannot both spend
+it; a pending request can only be decided once.
+
+**Residual Risk:** `agentfence approve` is **not authenticated** — anyone able
+to run it in the operator's environment can decide any pending request. The
+trust boundary is the terminal itself. A compromised agent process cannot
+approve anything, but a compromised terminal can.
 
 ### Stale Approval
 
-**Description:** An approval is reused after expiration.
+**Description:** An approval is reused after expiration, or a pending request is
+approved long after it was issued.
 
 **MVP Mitigation:** Expiry checking, validation.
 
-**Residual Risk:** None — expired approvals are rejected.
+**Phase 9 mitigation:** a request expires after `AGENTFENCE_APPROVAL_TTL_MINUTES`
+(default 30). An expired request can neither be decided nor consumed.
+
+**Residual Risk:** None within the configured window — an expired approval is
+rejected and the action stays blocked.
 
 ### Log Tampering
 

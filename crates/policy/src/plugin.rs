@@ -98,6 +98,85 @@ impl Default for PluginConfig {
     }
 }
 
+/// Default per-plugin memory limit, in bytes (64 MB).
+///
+/// Matches the sandbox default. Kept as a named constant so the config default,
+/// the native `PluginConfig` default, and the WASM entry default cannot drift.
+pub const DEFAULT_PLUGIN_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Default per-plugin timeout, in milliseconds.
+pub const DEFAULT_PLUGIN_TIMEOUT_MS: u64 = 1000;
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn default_plugin_timeout_ms() -> u64 {
+    DEFAULT_PLUGIN_TIMEOUT_MS
+}
+
+fn default_plugin_memory_mb() -> u64 {
+    (DEFAULT_PLUGIN_MEMORY_BYTES / (1024 * 1024)) as u64
+}
+
+/// The `plugins:` section of `agentfence.yaml`.
+///
+/// Backward compatible: a policy file without this section parses unchanged
+/// (`None`) and no plugin is loaded, so existing configurations behave exactly
+/// as before.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PluginSection {
+    /// Sandboxed WebAssembly policy components.
+    #[serde(default)]
+    pub wasm: Vec<WasmPluginSpec>,
+    /// Native policy rules.
+    ///
+    /// SECURITY: a native entry may only *reference* a plugin that the embedding
+    /// application registered programmatically before the policy was loaded.
+    /// This section can never introduce native code: an id that the host did
+    /// not register is a validation error, and native plugins are never loaded
+    /// from a path in the policy file.
+    #[serde(default)]
+    pub native: Vec<NativePluginSpec>,
+}
+
+/// A configured WebAssembly policy component.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmPluginSpec {
+    /// Unique plugin identifier. Must be non-empty and unique within the file.
+    pub id: String,
+    /// Whether the plugin participates in evaluation.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// Path to the compiled `.wasm` component.
+    pub module: String,
+    /// Expected SHA-256 fingerprint of the module bytes.
+    ///
+    /// Empty means no verification. When set, the fingerprint must be 64 hex
+    /// characters and must match the module bytes at registration *and* again at
+    /// every execution.
+    #[serde(default)]
+    pub expected_fingerprint: String,
+    /// Per-plugin memory limit in megabytes. Enforced by the sandbox.
+    #[serde(default = "default_plugin_memory_mb")]
+    pub max_memory_mb: u64,
+}
+
+/// A configured native policy rule.
+///
+/// SECURITY: reference-only. See [`PluginSection::native`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativePluginSpec {
+    /// Identifier of a plugin the host registered programmatically.
+    pub id: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_plugin_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_plugin_memory_mb")]
+    pub max_memory_mb: u64,
+}
+
 /// Plugin evaluation context.
 ///
 /// SECURITY: this is the **only** thing a plugin receives. It exposes no gateway
@@ -514,7 +593,7 @@ mod wasm_plugin_tests {
 }
 
 /// Boxed plugin type.
-type BoxedPlugin = Box<dyn CustomPolicyRule + Send + Sync>;
+pub type BoxedPlugin = Box<dyn CustomPolicyRule + Send + Sync>;
 
 /// WebAssembly plugin entry.
 pub struct WasmPluginEntry {
@@ -524,6 +603,8 @@ pub struct WasmPluginEntry {
     pub expected_fingerprint: String,
     /// Whether the plugin is enabled.
     pub enabled: bool,
+    /// Per-plugin memory limit in bytes, enforced by the sandbox at execution.
+    pub max_memory_bytes: usize,
 }
 
 /// Maximum number of concurrent native plugin worker threads.
@@ -608,16 +689,43 @@ impl PluginRegistry {
         module_path: String,
         expected_fingerprint: String,
     ) -> Result<(), String> {
+        self.register_wasm_plugin_with_limits(
+            plugin_id,
+            module_path,
+            expected_fingerprint,
+            DEFAULT_PLUGIN_MEMORY_BYTES,
+        )
+    }
+
+    /// Register a WebAssembly plugin with an explicit per-plugin memory limit.
+    ///
+    /// SECURITY: The module file is read, fingerprinted, and verified against
+    /// `expected_fingerprint` before registration. The module is NOT executed
+    /// at registration time — only at evaluation time through the sandbox, which
+    /// also re-verifies the fingerprint and enforces `max_memory_bytes`.
+    pub fn register_wasm_plugin_with_limits(
+        &mut self,
+        plugin_id: String,
+        module_path: String,
+        expected_fingerprint: String,
+        max_memory_bytes: usize,
+    ) -> Result<(), String> {
         if self.wasm_plugins.contains_key(&plugin_id) {
             return Err(format!("Wasm plugin {} is already registered", plugin_id));
         }
 
-        // SECURITY: Verify the fingerprint of the exact module bytes before
-        // registration. Uses the shared digest helper so the registered and
-        // execution-time checks cannot drift apart.
+        if max_memory_bytes == 0 {
+            return Err(format!("Wasm plugin {} has a zero memory limit", plugin_id));
+        }
+
+        // SECURITY: the module bytes are always read here, so a configured
+        // plugin whose file is missing or unreadable fails at load time instead
+        // of silently never running. The digest helper is shared with the
+        // execution-time check so the two cannot drift apart.
+        let module_bytes = std::fs::read(&module_path)
+            .map_err(|e| format!("Failed to read wasm module {}: {}", module_path, e))?;
+
         if !expected_fingerprint.is_empty() {
-            let module_bytes = std::fs::read(&module_path)
-                .map_err(|e| format!("Failed to read wasm module {}: {}", module_path, e))?;
             let actual_fingerprint = agentfence_wasm_plugin::compute_digest(&module_bytes);
             if actual_fingerprint != expected_fingerprint {
                 return Err(format!(
@@ -628,8 +736,8 @@ impl PluginRegistry {
         }
 
         info!(
-            "Registering wasm plugin: {} (module: {}, fingerprint: {})",
-            plugin_id, module_path, expected_fingerprint
+            "Registering wasm plugin: {} (module: {}, fingerprint: {}, max_memory: {} B)",
+            plugin_id, module_path, expected_fingerprint, max_memory_bytes
         );
         self.wasm_plugins.insert(
             plugin_id,
@@ -637,6 +745,7 @@ impl PluginRegistry {
                 module_path,
                 expected_fingerprint,
                 enabled: true,
+                max_memory_bytes,
             },
         );
         Ok(())
@@ -702,7 +811,12 @@ impl PluginRegistry {
             }
 
             // Execute through the Wasmtime sandbox.
-            match Self::execute_wasm_plugin(context, &module_bytes) {
+            match Self::execute_wasm_plugin(
+                context,
+                &module_bytes,
+                entry.max_memory_bytes,
+                &entry.expected_fingerprint,
+            ) {
                 Ok(plugin_result) => {
                     // SECURITY: defense in depth. The sandbox already maps any
                     // non-Deny/non-Ask value to abstain, so a plugin can never
@@ -736,8 +850,22 @@ impl PluginRegistry {
     fn execute_wasm_plugin(
         context: &PluginContext,
         module_bytes: &[u8],
+        max_memory_bytes: usize,
+        expected_fingerprint: &str,
     ) -> Result<PluginResult, String> {
-        let sandbox = WasmSandbox::new(SandboxConfig::default())
+        // SECURITY: the sandbox config is built from this plugin's own limits
+        // and digest, so the per-plugin memory bound and the fingerprint check
+        // are applied by the sandbox over the exact bytes being compiled.
+        let sandbox_config = SandboxConfig {
+            max_memory_bytes,
+            expected_digest: if expected_fingerprint.is_empty() {
+                String::new()
+            } else {
+                expected_fingerprint.to_string()
+            },
+            ..SandboxConfig::default()
+        };
+        let sandbox = WasmSandbox::new(sandbox_config)
             .map_err(|e| format!("failed to create wasm sandbox: {}", e))?;
 
         let wit_action = WitAction {

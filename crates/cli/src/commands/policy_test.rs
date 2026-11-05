@@ -1,7 +1,7 @@
 //! Policy test command implementation.
 
 use agentfence_core::types::{ActionId, ActionType, AgentId, SessionId};
-use agentfence_policy::{parser, pdp::Pdp};
+use agentfence_policy::{parser, plugin_loader};
 use tracing::info;
 
 pub fn execute(path: &str) {
@@ -19,7 +19,13 @@ pub fn execute(path: &str) {
         }
     };
 
-    let pdp = Pdp::new(policy);
+    let pdp = match plugin_loader::build_pdp(policy, Vec::new()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to load policy plugins: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Test cases
     let test_cases = vec![

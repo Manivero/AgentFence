@@ -271,9 +271,12 @@
 - [x] Unit tests for plugin system
 - [x] Registry consulted by the PDP (`Pdp::with_plugin_registry`): a plugin
       `Deny`/`Ask` tightens the core decision, a plugin `Allow` is abstained
-- [ ] Plugin configuration surface in `agentfence.yaml` and gateway wiring —
-      **no gateway constructs a registry yet**, so plugin enforcement is not
-      reachable from configuration (see SECURITY.md "Plugin Security")
+- [x] Plugin configuration surface in `agentfence.yaml` and gateway wiring:
+      `plugins:` section with validation, `plugin_loader::build_pdp` as the
+      single shared initialization boundary used by every enforcement entry
+      point (CLI `exec`/`run`/`mcp`/`network`, Hermes wrapper), fingerprint
+      verification, per-plugin memory limits, disabled-plugin skipping, and
+      fatal (non-silent) load failures (Phase 8)
 
 ### Priority 26 — External Identity Provider Integration ✅
 

@@ -1,0 +1,55 @@
+# AgentFence — policy plugins example
+#
+# The `plugins:` section is optional. A policy file without it behaves exactly
+# as before; this file shows what it looks like when plugins are configured.
+#
+# See POLICY.md "Policy Plugins" for the full field reference and SECURITY.md
+# "Plugin Security" for the trust model.
+
+version: 1
+
+defaults:
+  filesystem: deny
+  shell: deny
+  network: deny
+  mcp: deny
+
+shell:
+  allow:
+    - git
+    - cargo
+
+network:
+  allow:
+    - github.com
+    - crates.io
+
+plugins:
+  # ── WebAssembly components ────────────────────────────────────────────────
+  #
+  # Each entry is a real WebAssembly component executed inside the Wasmtime
+  # sandbox (fuel-bounded, no WASI, no host imports).
+  wasm:
+    - id: block-dangerous-targets
+      enabled: true
+      # Path to the compiled .wasm component.
+      module: ./plugins/deny-all.component.wasm
+      # SHA-256 of the module bytes. When set, the fingerprint is verified at
+      # registration AND again on every execution.
+      expected_fingerprint: ""
+      # Per-plugin sandbox memory limit, in megabytes.
+      max_memory_mb: 64
+
+    # A disabled plugin is never registered, so it cannot execute.
+    - id: audit-everything
+      enabled: false
+      module: ./plugins/audit.component.wasm
+
+  # ── Native policy rules ───────────────────────────────────────────────────
+  #
+  # SECURITY: a native entry may only REFERENCE a plugin that the embedding
+  # application registered programmatically. The policy file can never
+  # introduce native code, and an id the host did not register is an error.
+  # No production entry point registers native plugins today, so leave this
+  # list empty unless the host supplies them.
+  native: []

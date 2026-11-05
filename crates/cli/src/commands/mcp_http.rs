@@ -3,7 +3,7 @@
 use agentfence_core::types::{AgentId, SessionId};
 use agentfence_mcp::http_transport::{HttpTransport, HttpTransportConfig};
 use agentfence_mcp::proxy::ProxyConfig;
-use agentfence_policy::{parser::load_policy, pdp::Pdp};
+use agentfence_policy::{parser::load_policy, plugin_loader};
 use tracing::info;
 
 use super::db;
@@ -22,7 +22,13 @@ pub fn execute(server: &str, policy_path: &str, listen_addr: &str) {
         }
     };
 
-    let pdp = Pdp::new(policy);
+    let pdp = match plugin_loader::build_pdp(policy, Vec::new()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to load policy plugins: {}", e);
+            std::process::exit(1);
+        }
+    };
     let session_id = SessionId::new();
     let agent_id = AgentId::new("cli");
 

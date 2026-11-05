@@ -9,3 +9,4 @@ pub mod model;
 pub mod parser;
 pub mod pdp;
 pub mod plugin;
+pub mod plugin_loader;

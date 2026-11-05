@@ -17,6 +17,12 @@ pub struct Policy {
     pub network: Option<NetworkPolicy>,
     #[serde(default)]
     pub mcp: Option<McpPolicy>,
+    /// Optional `plugins:` section of `agentfence.yaml`.
+    ///
+    /// Backward compatible: absent or empty means no plugins are loaded and the
+    /// policy behaves exactly as it did before plugin support existed.
+    #[serde(default)]
+    pub plugins: Option<crate::plugin::PluginSection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

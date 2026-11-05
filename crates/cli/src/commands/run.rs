@@ -10,7 +10,7 @@ use tracing::{error, info, warn};
 
 use agentfence_core::types::{ActionId, AgentId, SessionId};
 use agentfence_policy::parser::load_policy;
-use agentfence_policy::pdp::Pdp;
+use agentfence_policy::plugin_loader;
 
 use super::db;
 
@@ -34,7 +34,14 @@ pub fn execute(policy_path: &str, agent: &str) -> i32 {
         return 1;
     }
 
-    let _pdp = Pdp::new(policy.clone());
+    let _pdp = match plugin_loader::build_pdp(policy.clone(), Vec::new()) {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to load policy plugins: {}", e);
+            eprintln!("Error: Failed to load policy plugins: {}", e);
+            return 1;
+        }
+    };
 
     // Create audit session
     let session_id = SessionId::new();

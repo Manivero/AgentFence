@@ -264,6 +264,103 @@ now covers.
 - Finding 13: Tauri UI not fully connected to security core (documented as limitation)
 - Finding 17: Gateway-created actions may omit metadata for policy conditions
 
+## Phase 8 — Plugin Configuration Wiring
+
+### Status: IMPLEMENTED AND VERIFIED (real WebAssembly components through the CLI)
+
+**Goal:** make plugins configured in `agentfence.yaml` reach the actual enforcement
+paths, without weakening existing policy decisions or breaking backward
+compatibility.
+
+**Before:** the registry was reachable only through `Pdp::with_plugin_registry`.
+No gateway constructed one and `agentfence.yaml` had no plugin section, so plugin
+enforcement was unreachable from configuration.
+
+**After:** `agentfence_policy::plugin_loader::build_pdp` is the single shared
+initialization boundary. Every production call site builds its PDP through it:
+
+| Entry point | Call site |
+|---|---|
+| CLI `exec` | `crates/cli/src/commands/exec.rs` |
+| CLI `run` | `crates/cli/src/commands/run.rs` |
+| CLI `mcp` (stdio) | `crates/cli/src/commands/mcp_proxy.rs` |
+| CLI `mcp-http` | `crates/cli/src/commands/mcp_http.rs` |
+| CLI `network` | `crates/cli/src/commands/network_proxy.rs` |
+| CLI `policy test` | `crates/cli/src/commands/policy_test.rs` |
+| Hermes wrapper | `crates/hermes/src/wrapper.rs` |
+
+### Configuration schema
+
+```yaml
+plugins:
+  wasm:
+    - id: block-dangerous-targets
+      enabled: true
+      module: ./plugins/deny-all.component.wasm
+      expected_fingerprint: "<64 hex>"
+      max_memory_mb: 64
+  native:
+    - id: my-host-rule
+      enabled: true
+```
+
+- Optional and backward compatible: a policy without `plugins:` parses to
+  `None`, loads no plugin, and behaves exactly as before (verified at both the
+  policy and gateway level).
+- `enabled: false` → never registered, cannot execute.
+- `expected_fingerprint` → SHA-256 verified at registration **and** again by the
+  sandbox over the exact bytes compiled.
+- `max_memory_mb` → enforced by the sandbox `Store::limiter` (new plumbing from
+  `WasmPluginSpec` → `SandboxConfig`). Fuel, module size (10 MB) and action size
+  remain sandbox-global and are not per-plugin configurable yet.
+
+### Trust model
+
+- **WebAssembly:** path + fingerprint. The module is read at load time, so a
+  missing file fails at startup instead of silently never running.
+- **Native:** reference-only. The `native:` section can only name a plugin the
+  embedding application registered programmatically via
+  `build_pdp(policy, native_plugins)`. `agentfence.yaml` can never introduce
+  native code; an unknown id is a validation error. No production entry point
+  registers native plugins, so a `native:` entry fails closed.
+- **Load failures are fatal, not silent.** A configured, enabled plugin that
+  cannot be loaded aborts the process rather than starting enforcement with a
+  partially loaded set — which would silently drop configured restrictions.
+
+### Defect found and fixed during Phase 8
+
+- A configured WebAssembly plugin with an **empty** fingerprint was never
+  checked for existence: registration succeeded and the plugin silently never
+  ran. `register_wasm_plugin*` now always reads the module bytes, so a missing
+  or unreadable module fails at load time. Covered by
+  `test_missing_module_is_rejected` and
+  `test_missing_plugin_module_is_reported_and_nothing_runs`.
+
+### Decision semantics (unchanged invariant)
+
+A plugin may only **tighten** a decision. Verified with the real component:
+plugin `Deny` overrides a core `Allow`; plugin `Ask` escalates; the guest's
+invalid `Allow` is abstained by the sandbox and can never turn a core `Deny`
+into an `Allow`; a trapped plugin abstains and never grants.
+
+### Tests
+
+`crates/policy/tests/plugin_loader.rs` (21) and
+`crates/cli/tests/plugin_enforcement.rs` (6) drive the real path:
+`agentfence.yaml` → `parse_policy` → `build_pdp` → `Pdp::evaluate` →
+execute-or-block. The CLI tests assert the observable side effect (a sentinel
+file that must not be created when a plugin denies).
+
+### Remaining limitations
+
+- No production entry point registers native plugins, so the `native:` section
+  has no host-supplied plugin to reference in a default installation.
+- `Pdp::new` still consults no plugin. It remains available for callers with no
+  configuration and never weakens the core policy, but any new enforcement
+  entry point must use `build_pdp`.
+- `agentguard policy check` validates the policy but does not load plugins.
+
+
 ## Self-Review Gate (Section 39)
 
 | Question | Answer |
@@ -284,4 +381,4 @@ now covers.
 | Did adversarial tests run? | ✅ Yes — bypass attempts, path traversal, etc. |
 | Did unrelated files change? | ✅ No — changes only in relevant files |
 | Does the repository still build? | ✅ Yes — cargo build successful |
-| Do all tests pass? | ✅ Yes — 326 tests passing |
+| Do all tests pass? | ✅ Yes — 457 tests passing |

@@ -6,7 +6,7 @@
 use std::process::Command;
 
 use agentfence_core::types::{AgentId, SessionId};
-use agentfence_policy::{parser::load_policy, pdp::Pdp};
+use agentfence_policy::{parser::load_policy, pdp::Pdp, plugin_loader};
 use agentfence_shell::{command::ShellCommand, gateway::ShellGateway};
 use tracing::info;
 
@@ -23,7 +23,7 @@ impl HermesWrapper {
     /// Create a new Hermes wrapper with the given policy.
     pub fn new(policy_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let policy = load_policy(policy_path)?;
-        let pdp = Pdp::new(policy);
+        let pdp = plugin_loader::build_pdp(policy, Vec::new())?;
 
         Ok(Self {
             pdp,

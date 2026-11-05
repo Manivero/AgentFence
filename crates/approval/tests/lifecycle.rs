@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use agentfence_approval::approval::{ApprovalScope, ApprovalService, ApprovalStatus};
 use agentfence_approval::broker::{ApprovalBroker, ApprovalConfig};
-use agentfence_core::types::{Action, ActionId, ActionType, AgentId, SessionId};
+use agentfence_core::types::{Action, ActionId, ActionType, AgentId, Context, SessionId, TaskId};
 
 fn action(session: &str, agent: &str, target: &str) -> Action {
     Action {
@@ -451,9 +451,336 @@ fn digest_is_stable_and_action_specific() {
 
 // ─── Phase 10: context binding ───────────────────────────────────────────────
 
+fn action_with_context(session: &str, agent: &str, target: &str, ctx: Context) -> Action {
+    Action {
+        id: ActionId::new(),
+        session_id: SessionId(session.to_string()),
+        agent_id: AgentId(agent.to_string()),
+        task_id: ctx.task_id.clone(),
+        action_type: ActionType::Shell,
+        tool: "shell".to_string(),
+        target: target.to_string(),
+        args_hash: format!("h:{}", target),
+        context: ctx,
+    }
+}
+
+#[test]
+fn approval_cannot_be_consumed_in_a_different_directory() {
+    // SECURITY: `git push` in /srv/production and in /tmp are different
+    // operations. An approval issued for one must not authorise the other.
+    let service = ApprovalService::new();
+
+    let prod_ctx = Context {
+        cwd: Some("/srv/production".to_string()),
+        ..Default::default()
+    };
+    let original = action_with_context("s1", "agent-a", "git push", prod_ctx);
+    let record = request(&service, &original);
+    service.decide(&record.approval_id, true).unwrap();
+
+    let tmp_ctx = Context {
+        cwd: Some("/tmp".to_string()),
+        ..Default::default()
+    };
+    let elsewhere = action_with_context("s1", "agent-a", "git push", tmp_ctx);
+    assert!(
+        service.consume(&record.approval_id, &elsewhere).is_err(),
+        "an approval must not be consumed from a different directory"
+    );
+
+    // The original context still owns it.
+    assert!(service.consume(&record.approval_id, &original).is_ok());
+}
+
+#[test]
+fn approval_cannot_be_consumed_from_a_different_location() {
+    // SECURITY: location conditions read `client_ip` and `host`.
+    let service = ApprovalService::new();
+
+    let allowed_ctx = Context {
+        client_ip: Some("10.0.0.5".to_string()),
+        host: Some("prod.internal".to_string()),
+        ..Default::default()
+    };
+    let original = action_with_context("s1", "agent-a", "deploy", allowed_ctx);
+    let record = request(&service, &original);
+    service.decide(&record.approval_id, true).unwrap();
+
+    let other_ip = action_with_context(
+        "s1",
+        "agent-a",
+        "deploy",
+        Context {
+            client_ip: Some("203.0.113.9".to_string()),
+            host: Some("prod.internal".to_string()),
+            ..Default::default()
+        },
+    );
+    assert!(service.consume(&record.approval_id, &other_ip).is_err());
+
+    let other_host = action_with_context(
+        "s1",
+        "agent-a",
+        "deploy",
+        Context {
+            client_ip: Some("10.0.0.5".to_string()),
+            host: Some("dev.internal".to_string()),
+            ..Default::default()
+        },
+    );
+    assert!(service.consume(&record.approval_id, &other_host).is_err());
+
+    assert!(service.consume(&record.approval_id, &original).is_ok());
+}
+
+#[test]
+fn approval_cannot_be_consumed_in_a_different_repository_or_branch() {
+    // SECURITY: plugins receive repository/branch/task_id and can change their
+    // decision based on them.
+    let service = ApprovalService::new();
+
+    let prod = Context {
+        repository: Some("acme/prod".to_string()),
+        branch: Some("main".to_string()),
+        task_id: Some(TaskId("task-1".to_string())),
+        ..Default::default()
+    };
+    let original = action_with_context("s1", "agent-a", "publish", prod);
+    let record = request(&service, &original);
+    service.decide(&record.approval_id, true).unwrap();
+
+    let dev = Context {
+        repository: Some("acme/dev".to_string()),
+        branch: Some("main".to_string()),
+        task_id: Some(TaskId("task-1".to_string())),
+        ..Default::default()
+    };
+    assert!(service
+        .consume(
+            &record.approval_id,
+            &action_with_context("s1", "agent-a", "publish", dev)
+        )
+        .is_err());
+
+    assert!(service.consume(&record.approval_id, &original).is_ok());
+}
+
+#[test]
+fn env_metadata_does_not_weaken_the_binding() {
+    // Documented exclusion: env_metadata is untrusted and consulted by neither
+    // the PDP nor the plugins, so it must not affect the binding.
+    let service = ApprovalService::new();
+
+    let ctx = Context::default();
+    let original = action_with_context("s1", "agent-a", "git push", ctx.clone());
+    let record = request(&service, &original);
+    service.decide(&record.approval_id, true).unwrap();
+
+    let spoofed = action_with_context(
+        "s1",
+        "agent-a",
+        "git push",
+        Context {
+            env_metadata: Some(serde_json::json!({"host": "evil.example.com"})),
+            ..ctx
+        },
+    );
+    assert!(service.consume(&record.approval_id, &spoofed).is_ok());
+}
+
 // ─── Phase 10: expiry boundaries ─────────────────────────────────────────────
+
+#[test]
+fn expiry_boundary_is_inclusive_and_enforced() {
+    let service = ApprovalService::new();
+    let a = action("s1", "agent-a", "rm -rf /tmp/x");
+
+    // A request that expires one second from now is still valid.
+    let alive = service
+        .request_pending(
+            &a,
+            "reason",
+            "v1",
+            ApprovalScope::Once,
+            Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+        )
+        .unwrap();
+    assert!(alive.is_valid(), "a future expiry must be valid");
+
+    // A request that expired one second ago is not.
+    let dead = service
+        .request_pending(
+            &a,
+            "reason",
+            "v1",
+            ApprovalScope::Once,
+            Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+        )
+        .unwrap();
+    assert!(!dead.is_valid(), "a past expiry must be invalid");
+    assert!(service.decide(&dead.approval_id, true).is_err());
+    assert!(service.consume(&dead.approval_id, &a).is_err());
+}
+
+#[test]
+fn an_approved_request_cannot_be_consumed_after_it_expires() {
+    // SECURITY: the validity check happens inside the same atomic transition as
+    // the consumption, so there is no window between "still valid" and "spent".
+    let service = ApprovalService::new();
+    let a = action("s1", "agent-a", "rm -rf /tmp/x");
+
+    let record = service
+        .request_pending(
+            &a,
+            "reason",
+            "v1",
+            ApprovalScope::Once,
+            Some(chrono::Utc::now() + chrono::Duration::milliseconds(200)),
+        )
+        .unwrap();
+    service.decide(&record.approval_id, true).unwrap();
+
+    // Wait past the expiry, then try to consume.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert!(
+        service.consume(&record.approval_id, &a).is_err(),
+        "an expired approval must not be consumable"
+    );
+    assert_eq!(
+        service.get(&record.approval_id).unwrap().status,
+        ApprovalStatus::Expired,
+        "the expired request must be recorded as Expired"
+    );
+}
+
+#[test]
+fn restarting_the_service_does_not_reset_approval_state() {
+    // SECURITY: approval state lives in SQLite, not in process memory.
+    let dir = std::env::temp_dir().join(format!("af-approval-{}", uuid::Uuid::new_v4()));
+    let db = dir.join("approvals.db");
+
+    let a = action("s1", "agent-a", "rm -rf /tmp/x");
+    let approval_id = {
+        let service = ApprovalService::new_with_db(db.clone()).unwrap();
+        let record = request(&service, &a);
+        service.decide(&record.approval_id, true).unwrap();
+        record.approval_id
+    };
+
+    // Simulate a restart: a brand new service over the same store.
+    let restarted = ApprovalService::new_with_db(db.clone()).unwrap();
+    let record = restarted.get(&approval_id).expect("state must survive");
+    assert_eq!(record.status, ApprovalStatus::Approved);
+    assert!(restarted.consume(&approval_id, &a).is_ok());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 // ─── Phase 10: concurrent decisions ──────────────────────────────────────────
 
+#[test]
+fn concurrent_approve_and_reject_produces_exactly_one_decision() {
+    let service = ApprovalService::new();
+    let a = action("s1", "agent-a", "rm -rf /tmp/x");
+    let record = request(&service, &a);
+    let id = record.approval_id.clone();
+
+    let service = Arc::new(service);
+    let outcomes = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let service = Arc::clone(&service);
+            let id = id.clone();
+            handles.push(scope.spawn(move || {
+                let approve = i % 2 == 0;
+                service.decide(&id, approve).map(|r| r.decision)
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    let decided = outcomes.iter().filter(|o| o.is_ok()).count();
+    assert_eq!(decided, 1, "exactly one decision may succeed");
+
+    // The recorded decision matches the winner.
+    let final_record = service.get(&id).unwrap();
+    assert!(matches!(
+        final_record.status,
+        ApprovalStatus::Approved | ApprovalStatus::Rejected
+    ));
+    assert!(outcomes.iter().any(|o| o
+        .as_ref()
+        .ok()
+        .map(|d| *d == final_record.decision)
+        .unwrap_or(false)));
+}
+
 // ─── Phase 10: true multi-process replay ─────────────────────────────────────
 
+#[test]
+fn two_separate_processes_cannot_both_consume_the_same_approval() {
+    // Worker mode: this test binary re-executes itself as a consumer process.
+    if let (Ok(db), Ok(id), Ok(action_json)) = (
+        std::env::var("AF_WORKER_DB"),
+        std::env::var("AF_WORKER_ID"),
+        std::env::var("AF_WORKER_ACTION"),
+    ) {
+        let action: Action = serde_json::from_str(&action_json).expect("worker action");
+        let service = ApprovalService::new_with_db(std::path::PathBuf::from(db)).unwrap();
+        let ok = service.consume(&id, &action).is_ok();
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+
+    let dir = std::env::temp_dir().join(format!("af-approval-{}", uuid::Uuid::new_v4()));
+    let db = dir.join("approvals.db");
+
+    let service = ApprovalService::new_with_db(db.clone()).unwrap();
+    let a = action("s1", "agent-a", "rm -rf /tmp/x");
+    let record = request(&service, &a);
+    service.decide(&record.approval_id, true).unwrap();
+    drop(service);
+
+    // Two genuinely separate OS processes race for the same approval.
+    let exe = std::env::current_exe().unwrap();
+    let test_name = "two_separate_processes_cannot_both_consume_the_same_approval";
+    let action_json = serde_json::to_string(&a).unwrap();
+
+    let mut children = Vec::new();
+    for _ in 0..2 {
+        children.push(
+            std::process::Command::new(&exe)
+                .args(["--exact", test_name])
+                .env("AF_WORKER_DB", &db)
+                .env("AF_WORKER_ID", &record.approval_id)
+                .env("AF_WORKER_ACTION", &action_json)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("worker process"),
+        );
+    }
+
+    let successes = children
+        .into_iter()
+        .map(|mut c| c.wait().expect("worker wait").success())
+        .filter(|ok| *ok)
+        .count();
+
+    assert_eq!(
+        successes, 1,
+        "exactly one process must consume the approval; the other must be refused"
+    );
+
+    // Database state is consistent: one Consumed record, no duplicates.
+    let after = ApprovalService::new_with_db(db.clone()).unwrap();
+    let all = after.list_all();
+    assert_eq!(all.len(), 1, "no duplicate records may be created");
+    assert_eq!(all[0].status, ApprovalStatus::Consumed);
+    assert!(all[0].consumed_at.is_some());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

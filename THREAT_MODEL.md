@@ -79,6 +79,13 @@ re-derives; consumption is an atomic `Approved -> Consumed` transition inside a
 SQLite `BEGIN IMMEDIATE` transaction, so concurrent consumers cannot both spend
 it; a pending request can only be decided once.
 
+**Phase 10 mitigation:** the digest now also covers `cwd`, `repository`,
+`branch`, `task_id`, `client_ip` and `host` — the fields that can change either
+the policy decision (`location` conditions, plugin inputs) or the meaning of the
+operation (a relative path). `consume()` re-derives it, so an approval issued in
+one directory or from one location cannot be spent elsewhere. Cross-process
+consumption is covered by a two-process test.
+
 **Residual Risk:** `agentfence approve` is **not authenticated** — anyone able
 to run it in the operator's environment can decide any pending request. The
 trust boundary is the terminal itself. A compromised agent process cannot

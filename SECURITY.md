@@ -209,10 +209,26 @@ side effect is prevented while it is outstanding.
 
 ### Binding
 
-Every request stores a SHA-256 digest of the action being authorised — action
-type, tool, target, argument hash, session id and agent id. Consuming the
-approval re-derives that digest, so an approval cannot authorise a different
-command, tool call, target, session or agent.
+Every request stores a SHA-256 digest of the action being authorised. It covers
+action type, tool, target, argument hash, session id, agent id **and the
+authorization-relevant context**: `cwd`, `repository`, `branch`, `task_id`,
+`client_ip`, `host`. Consuming the approval re-derives that digest, so an
+approval cannot authorise a different command, tool call, target, session,
+agent, directory or location.
+
+`env_metadata` is deliberately excluded: it is untyped, untrusted, and consulted
+by neither the PDP nor plugins.
+
+### Information disclosure
+
+`agentfence approve list` and `show` print the command text, because the operator
+cannot decide without seeing what they authorise. When the command matches a
+known credential pattern, a warning is printed to **stderr** listing the detected
+categories — never the value, and never on stdout where it could be captured by
+another tool. The command itself is still stored, in plaintext, in the local
+approval database and audit trail. A credential embedded in a command is
+therefore visible to the operator and persisted on their machine; that is a
+property of a human approval step, and it is stated here rather than hidden.
 
 ### Replay and atomicity
 

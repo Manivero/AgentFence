@@ -17,9 +17,35 @@
 
 use std::io::{self, Write};
 
-use agentfence_approval::approval::ApprovalService;
+use agentfence_approval::approval::{ApprovalRecord, ApprovalService};
 use agentfence_approval::broker::default_approval_db_path;
 use agentfence_core::types::Decision;
+use agentfence_secrets::detector::SecretDetector;
+
+/// Warn when a request's target looks like it contains a credential.
+///
+/// SECURITY: this is a **warning**, not redaction. The detector reports
+/// categories only and never returns the matched value, so nothing sensitive is
+/// printed here. The operator still sees the command, because they cannot make
+/// an informed decision without it — but they are told that it may carry a
+/// credential and that it is stored locally in plaintext.
+fn warn_if_credential(record: &ApprovalRecord) {
+    let secrets = SecretDetector::new().detect(&record.target, "approval.target");
+    if secrets.is_empty() {
+        return;
+    }
+
+    let mut categories: Vec<String> = secrets.iter().map(|s| s.category.to_string()).collect();
+    categories.sort();
+    categories.dedup();
+
+    eprintln!();
+    eprintln!("⚠ WARNING: this command appears to contain a possible credential.");
+    eprintln!("   detected: {}", categories.join(", "));
+    eprintln!("   The command text is stored in the local approval database and");
+    eprintln!("   shown here in plaintext. Verify it before approving.");
+    eprintln!();
+}
 
 /// Execute the approve command.
 ///
@@ -85,6 +111,7 @@ fn decide(service: &ApprovalService, approval_id: &str, approve: bool) {
         return;
     };
 
+    warn_if_credential(&record);
 
     println!("AgentFence Approve");
     println!("=================");
@@ -130,6 +157,7 @@ fn show_approval(service: &ApprovalService, approval_id: &str) {
         return;
     };
 
+    warn_if_credential(&record);
 
     println!("AgentFence Approval");
     println!("===================");
@@ -196,6 +224,7 @@ fn list_approvals(service: &ApprovalService, all: bool) {
     }
 
     for record in pending.iter() {
+        warn_if_credential(record);
         println!("  Approval ID: {}", record.approval_id);
         println!("  Action:      {}", record.action_id.0);
         println!("  Tool:        {}", record.tool);
@@ -219,6 +248,7 @@ fn interactive_prompt(service: &ApprovalService, approval_id: &str) {
         return;
     };
 
+    warn_if_credential(&record);
 
     println!();
     println!("⚠ ACTION REQUIRES APPROVAL");

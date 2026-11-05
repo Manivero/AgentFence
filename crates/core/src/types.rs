@@ -195,21 +195,73 @@ pub struct Action {
 impl Action {
     /// Canonical SHA-256 digest of the *content* of this action.
     ///
-    /// SECURITY: this is what an approval is bound to. The digest covers the
-    /// action type, tool, target, argument hash, session id and agent id.
+    /// SECURITY: this is what an approval is bound to. The digest covers every
+    /// field that can change either the policy decision or the meaning of the
+    /// protected operation:
     ///
-    /// The digest is used to bind an approval to the exact action it authorises.
+    /// | field | why it is included |
+    /// |---|---|
+    /// | `action_type` | selects the policy section that decides |
+    /// | `tool` | the executable / tool name the policy matched |
+    /// | `target` | the raw command, URL or server the operation acts on |
+    /// | `args_hash` | the arguments or body |
+    /// | `session_id` | policy is evaluated per session |
+    /// | `agent_id` | policy is evaluated per agent |
+    /// | `cwd` | a relative path in `target` resolves differently per directory |
+    /// | `repository`, `branch` | plugin decisions can depend on them |
+    /// | `task_id` | plugin decisions can depend on it |
+    /// | `client_ip`, `host` | location conditions read exactly these |
+    ///
+    /// Deliberately **excluded**:
+    /// - `id` — not content. It is correlation metadata stored alongside the
+    ///   digest; including it would make an approval unusable for the same
+    ///   operation re-presented in the same context.
+    /// - `context.env_metadata` — untyped, untrusted, and consulted by neither
+    ///   the PDP nor the plugins (see `Context::env_metadata`).
+    ///
+    /// Fields are length-prefixed, so no two different field values can be
+    /// concatenated into the same input. `None` is encoded as an explicit
+    /// absent marker, never as an empty string, so `Some("")` and `None` differ.
     pub fn digest(&self) -> String {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
-        hasher.update(self.action_type.to_string().as_bytes());
-        hasher.update(self.tool.as_bytes());
-        hasher.update(self.target.as_bytes());
-        hasher.update(self.args_hash.as_bytes());
-        hasher.update(self.session_id.0.as_bytes());
-        hasher.update(self.agent_id.0.as_bytes());
+
+        feed(&mut hasher, self.action_type.to_string().as_bytes());
+        feed(&mut hasher, self.tool.as_bytes());
+        feed(&mut hasher, self.target.as_bytes());
+        feed(&mut hasher, self.args_hash.as_bytes());
+        feed(&mut hasher, self.session_id.0.as_bytes());
+        feed(&mut hasher, self.agent_id.0.as_bytes());
+
+        // Authorization-relevant context.
+        feed_option(&mut hasher, self.context.cwd.as_deref());
+        feed_option(&mut hasher, self.context.repository.as_deref());
+        feed_option(&mut hasher, self.context.branch.as_deref());
+        feed_option(&mut hasher, self.task_id.as_ref().map(|t| t.0.as_str()));
+        feed_option(&mut hasher, self.context.client_ip.as_deref());
+        feed_option(&mut hasher, self.context.host.as_deref());
+
         hex::encode(hasher.finalize())
+    }
+}
+
+/// Length-prefix a value so distinct inputs cannot collide.
+fn feed(hasher: &mut sha2::Sha256, bytes: &[u8]) {
+    use sha2::Digest;
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+/// Encode an optional value: `None` is an explicit marker, never an empty string.
+fn feed_option(hasher: &mut sha2::Sha256, value: Option<&str>) {
+    use sha2::Digest;
+    match value {
+        Some(bytes) => {
+            hasher.update(1u8.to_le_bytes());
+            feed(hasher, bytes.as_bytes());
+        }
+        None => hasher.update(0u8.to_le_bytes()),
     }
 }
 

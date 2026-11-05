@@ -79,6 +79,17 @@
 - [x] Audit trail correlates policy decision, approval decision and outcome
 - [x] WASM plugin `Ask` enters the same lifecycle
 
+## Approval Security Hardening ✅
+
+- [x] Digest covers every authorization-relevant field (`cwd`, `repository`,
+      `branch`, `task_id`, `client_ip`, `host`); `env_metadata` excluded by
+      documented rationale
+- [x] Encoding proven collision-free and Unicode-safe
+- [x] Two separate OS processes cannot both consume one approval
+- [x] Expiry boundaries, restart persistence and concurrent decide tested
+- [x] Credential-in-command warning on the approval path (categories only)
+- [x] `wasmtime` updated past RUSTSEC-2026-0422
+
 ## Phase 9 — Hermes ✅
 
 - [x] Working Hermes wrapper

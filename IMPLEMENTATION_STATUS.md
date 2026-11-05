@@ -476,6 +476,68 @@ WASM plugin `Ask` enters the same lifecycle.
 - Approval requests are `Once` scoped; wider scopes are not requested by any
   gateway.
 
+## Phase 10 — Approval Security Hardening
+
+### Status: IMPLEMENTED AND VERIFIED
+
+**Goal:** audit the approval lifecycle for action binding, context changes,
+replay, concurrent consumption, expiration and approval authority — and fix
+what the evidence showed.
+
+### Findings and fixes
+
+**1. The approval binding omitted authorization-relevant context (fixed).**
+
+`Action::digest()` covered only action type, tool, target, argument hash,
+session and agent. It did **not** cover:
+
+| field | why it is authorization-relevant |
+|---|---|
+| `cwd` | a relative path in the command resolves differently per directory |
+| `client_ip`, `host` | read directly by `location` policy conditions |
+| `repository`, `branch`, `task_id` | passed to policy plugins, which can decide on them |
+
+An approval issued in one directory or from one location could be consumed for
+the same command elsewhere — including where the policy would have decided
+differently. The digest now covers all of them. `env_metadata` is deliberately
+excluded (untrusted, and consulted by neither the PDP nor plugins).
+
+**2. `wasmtime 48.0.7` carried two security advisories (fixed).**
+`RUSTSEC-2026-0422` (insufficient type-check → panic on `i31`/`nullref`
+arguments) and a cross-engine type-confusion advisory. This is the runtime that
+executes untrusted policy plugins, so it is a security boundary. Updated to
+`48.0.8`.
+
+**3. The approval CLI showed commands without any credential warning (fixed).**
+`agentfence approve list|show` printed `target` — the raw command — with no
+indication when it might contain a credential. A warning is now emitted on
+stderr (never stdout, never the value). The command itself is still shown,
+because the operator cannot make an informed decision without it.
+
+### Approval authority — actual guarantee
+
+The approval boundary is **the operator's terminal**, not a credential:
+
+- `agentfence approve` is authenticated by OS file access to the local data
+  directory. Any OS user who can read the approval store can approve.
+- There is **no per-agent isolation**: one operator can approve any pending
+  request, including one issued by a different agent or session. The approval
+  is bound to the *action*, not to the requester's identity beyond the digest.
+- The command text is stored in the local approval database and in the audit
+  trail. A credential embedded in a command is therefore persisted in plaintext
+  on the operator's machine. It is never printed by the warning path.
+- The store is local; AgentFence does not transmit approval data.
+
+These are documented limitations, not claims. No authentication system was
+added, because a partial one would be worse than the documented boundary.
+
+### Tests
+
+12 digest tests (`crates/core/tests/digest.rs`), 25 lifecycle tests
+(`crates/approval/tests/lifecycle.rs`), 10 approval-flow tests
+(`crates/cli/tests/approval_flow.rs`) — including a true two-process race where
+two separate OS processes compete for one approval.
+
 ## Self-Review Gate (Section 39)
 
 | Question | Answer |
@@ -496,4 +558,4 @@ WASM plugin `Ask` enters the same lifecycle.
 | Did adversarial tests run? | ✅ Yes — bypass attempts, path traversal, etc. |
 | Did unrelated files change? | ✅ No — changes only in relevant files |
 | Does the repository still build? | ✅ Yes — cargo build successful |
-| Do all tests pass? | ✅ Yes — 482 tests passing |
+| Do all tests pass? | ✅ Yes — 504 tests passing |

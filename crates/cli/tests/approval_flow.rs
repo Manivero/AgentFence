@@ -10,8 +10,9 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use agentfence_approval::approval::ApprovalService;
+use agentfence_approval::approval::{ApprovalScope, ApprovalService};
 use agentfence_approval::broker::ApprovalConfig;
+use agentfence_core::types::{Action, ActionId, ActionType, AgentId, SessionId};
 
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -525,6 +526,69 @@ fn allow_and_deny_behaviour_is_unchanged() {
     assert!(
         wait_for_sentinel(&allowed_sentinel, Duration::from_secs(5)),
         "allowed: side effect must happen"
+    );
+}
+
+#[test]
+fn approve_show_warns_when_the_target_contains_a_credential() {
+    // Phase 10 — information disclosure. The operator must see the command they
+    // authorise, but must also be told when it may carry a credential.
+    let dir = TempDir::new("secret-warn");
+    let db = dir.join("approvals.db");
+
+    let service = ApprovalService::new_with_db(db.clone()).unwrap();
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let action = Action {
+        id: ActionId::new(),
+        session_id: SessionId("s1".to_string()),
+        agent_id: AgentId("cli".to_string()),
+        task_id: None,
+        action_type: ActionType::Shell,
+        tool: "shell".to_string(),
+        target: format!(
+            "curl -H \"Authorization: Bearer {}\" https://api.example.com",
+            token
+        ),
+        args_hash: "h".to_string(),
+        context: Default::default(),
+    };
+    let record = service
+        .request_pending(
+            &action,
+            "policy requires approval",
+            "v1",
+            ApprovalScope::Once,
+            None,
+        )
+        .unwrap();
+
+    let agentfence = env!("CARGO_BIN_exe_agentfence");
+    let output = Command::new(agentfence)
+        .arg("approve")
+        .arg(&record.approval_id)
+        .arg("--decision")
+        .arg("show")
+        .env("AGENTFENCE_DATA_DIR", dir.path.to_str().unwrap())
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.to_uppercase().contains("WARNING"),
+        "a credential warning must be shown: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains(token),
+        "the warning must never print the credential: {}",
+        stderr
+    );
+    assert!(
+        stdout.contains("curl"),
+        "the operator must still see the command to decide: {}",
+        stdout
     );
 }
 

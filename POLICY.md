@@ -294,9 +294,14 @@ human decision  -->  Approved -> consumed once -> execute
 
 ### Binding
 
-`action_digest` covers the action type, tool, target, argument hash, session id
-and agent id. Consuming an approval re-derives the digest, so an approval cannot
-authorise a different command, tool call, target, session or agent.
+`action_digest` covers the action type, tool, target, argument hash, session id,
+agent id, and the authorization-relevant context: `cwd`, `repository`,
+`branch`, `task_id`, `client_ip`, `host`. Consuming an approval re-derives the
+digest, so an approval cannot authorise a different command, tool call, target,
+session, agent, directory or location.
+
+`env_metadata` is excluded — untrusted, and consulted by neither the PDP nor
+plugins.
 
 ### Replay prevention
 

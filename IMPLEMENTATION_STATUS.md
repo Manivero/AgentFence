@@ -602,6 +602,40 @@ separate operator authentication; this is a documented trust boundary.
 - AgentFence does not protect against an OS administrator or code running under
   the same account.
 
+## Phase 12 - Real Container Execution Backend
+
+### Implemented
+
+- `agentfence-enforcement::backend`: `ExecutionBackend` trait, `HostBackend`,
+  `ContainerBackend`, `ExecutionMode`, `select_backend`, `run_with_timeout`.
+- `agentfence-enforcement::container`: a real `ContainerEnforcer` with
+  non-root execution, read-only root filesystem, `--cap-drop ALL`,
+  `no-new-privileges`, CPU/memory/PID limits, `--network none`, bounded
+  `--tmpfs`, `--init`, `--rm --name <uuid>`, explicit mounts, and a
+  wall-clock timeout that kills and removes the named container.
+- `agentguard exec` selects the backend once from explicit configuration and
+  routes both the allow path and the approved path through it.
+- Configuration validation rejects a root uid, relative workdir or mount
+  paths, `..` components, duplicate mount targets, and mounts exposing the
+  host container runtime socket.
+
+### Enforcement invariants
+
+- A denied command never reaches the runtime.
+- A pending approval never reaches the runtime.
+- An approved command reaches the runtime exactly once.
+- A missing runtime, an invalid configuration, or an initialization failure
+  fails closed; there is no host fallback.
+- Credentials in the command are redacted in AgentFence's own logs.
+
+### Verification
+
+- 14 fake-runtime tests in `crates/enforcement/tests/container_backend.rs`.
+- 6 end-to-end tests in `crates/cli/tests/container_enforcement.rs` driving the
+  real binary.
+- Real container isolation was **not** verified: no container runtime was
+  available in the verification environment.
+
 ## Self-Review Gate (Section 39)
 
 | Question | Answer |

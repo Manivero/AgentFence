@@ -152,6 +152,16 @@ inherited ACEs from every child object, leaving pre-existing files with an
 empty DACL. AgentFence therefore never rewrites a pre-existing directory; it
 reports it and restricts only directories it creates.
 
+### Container Escape
+
+| Asset | Threat | Mitigation | Residual risk |
+|---|---|---|---|
+| Host kernel | Container escape through a kernel vulnerability | Non-root user, `--cap-drop ALL`, `no-new-privileges`, read-only root FS, resource limits, no network | Kernel exploits are not mitigated by container isolation |
+| Host container runtime | Mounting the host runtime socket to gain runtime control | Socket mounts rejected during configuration validation | A runtime bug is not mitigated |
+| Host filesystem | Reading or modifying host files | Only explicit, validated mounts; default is none | Every declared mount is fully accessible to the container |
+| Host network | Exfiltration or lateral movement | `--network none` by default | Any enabled network path is fully accessible |
+| Host resources | CPU, memory, or PID exhaustion | `--cpus`, `--memory`, `--memory-swap`, `--pids-limit`, timeout with container kill | Limits are runtime-enforced, not guaranteed against a runtime bug |
+
 ## Threats AgentFence Can Mitigate
 
 - Unauthorized shell commands

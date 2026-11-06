@@ -131,6 +131,19 @@ administrator or same-account code.
 - [x] Documentation review (all docs updated)
 - [x] Performance checks (no premature optimization needed)
 
+## Real Container Execution Backend ✅
+
+Replace the container execution placeholder with a real backend.
+
+- [x] Execution backend abstraction (`ExecutionBackend`, host and container).
+- [x] Non-root execution, read-only root FS, capability drop, no-new-privileges.
+- [x] CPU, memory, PID, and wall-clock limits with container cleanup.
+- [x] No host network by default; no Docker socket; explicit mounts only.
+- [x] Fail closed on a missing runtime or invalid configuration.
+- [x] Credentials redacted in AgentFence logs.
+- [x] Fake-runtime tests plus end-to-end enforcement tests.
+- [ ] Verified against a real container runtime (not yet performed).
+
 ## Post-MVP v0.2 — In Progress
 
 ### Priority 1 — Security Correctness ✅

@@ -358,6 +358,86 @@ the CLI, never through the agent's own channel.
 - AgentFence does not protect against an OS administrator or code running under
   the same account.
 
+## Container Execution Backend
+
+AgentFence can execute policy-approved commands inside an isolated container
+instead of directly on the host.
+
+```text
+Policy evaluation -> plugin evaluation -> approval (if required)
+    -> execution backend -> container runtime -> container
+```
+
+### Selection
+
+The backend is chosen once, from explicit configuration, before any command is
+evaluated:
+
+| Variable | Meaning |
+|---|---|
+| `AGENTFENCE_EXECUTION_BACKEND` | `host` (default) or `container` |
+| `AGENTFENCE_CONTAINER_RUNTIME` | `docker` (default) or `podman` |
+| `AGENTFENCE_CONTAINER_RUNTIME_PATH` | Explicit runtime executable path |
+| `AGENTFENCE_CONTAINER_IMAGE` | Image reference (default `alpine:latest`) |
+| `AGENTFENCE_CONTAINER_MAX_CPU` | CPU limit (default `1.0`) |
+| `AGENTFENCE_CONTAINER_MAX_MEMORY_MB` | Memory limit (default `512`) |
+| `AGENTFENCE_CONTAINER_PIDS_LIMIT` | Process limit (default `256`) |
+| `AGENTFENCE_CONTAINER_TIMEOUT_SECS` | Wall-clock timeout (default `300`) |
+| `AGENTFENCE_CONTAINER_RUN_AS_UID` / `_GID` | Container uid/gid (default `1000:1000`) |
+| `AGENTFENCE_CONTAINER_NETWORK` | `none` disables networking |
+| `AGENTFENCE_CONTAINER_READ_ONLY` | `true` mounts a read-only root filesystem |
+
+**There is no host fallback.** If the container backend is selected and the
+runtime is missing, misconfigured, or fails to start a container, the command
+fails closed. No code path executes a command on the host instead.
+
+### Controls applied to every container
+
+| Control | Effect |
+|---|---|
+| `--user <uid>:<gid>` | Non-root execution; uid `0` is rejected by validation |
+| `--read-only` | Root filesystem is read-only |
+| `--cap-drop ALL` | No Linux capabilities |
+| `--security-opt no-new-privileges:true` | Blocks setuid privilege escalation |
+| `--cpus`, `--memory`, `--memory-swap`, `--pids-limit` | Resource ceilings |
+| `--network none` | No host network by default |
+| `--tmpfs /tmp:rw,nosuid,noexec,size=Nm` | Bounded, non-executable temp space |
+| `--init` | Reaps zombie processes |
+| `--rm --name <uuid>` | Automatic cleanup; named so a timed-out container can be killed |
+| `--workdir` | Explicit working directory |
+| `-v host:container[:ro]` | Only operator-listed mounts |
+| `-e K=V` | Only operator-listed environment variables |
+
+The host container runtime socket is never mounted: a mount whose host path
+contains `docker.sock`, `containerd.sock`, or a Docker runtime directory is
+rejected during configuration validation.
+
+### What the container boundary protects against
+
+- Direct modification of the host filesystem outside the declared mounts.
+- Network access to the host network and to arbitrary hosts.
+- Privilege escalation through capabilities or setuid binaries.
+- Resource exhaustion through CPU, memory, or process-count abuse.
+
+### What remains accessible
+
+- Host files reachable through an explicitly declared mount (read-only or
+  read-write, exactly as configured).
+- Host process-tree visibility only insofar as the container runtime itself
+  exposes it; `--pid` is not set, so the container has its own PID namespace.
+- The container image and its contents, which must be trusted.
+- Anything reachable through a kernel vulnerability in the host kernel.
+
+### Explicit non-guarantees
+
+- A container does **not** protect against a compromised host kernel.
+- A container does **not** protect against a host administrator.
+- A container does **not** make the policy decision; it only executes an
+  already-approved action.
+- Real isolation was verified only where a real runtime was available. The
+  automated suite uses a **fake** runtime and proves invocation construction
+  and fail-closed behaviour, not isolation.
+
 ## Known Limitations
 
 - Cooperative mode only — no OS-level enforcement

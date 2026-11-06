@@ -1,9 +1,12 @@
 //! Exec command implementation.
 
-use std::process::Command;
+use std::path::Path;
 
 use agentfence_approval::broker::{ApprovalBroker, ApprovalConfig};
 use agentfence_core::types::{ActionId, AgentId, Decision, RiskLevel, SessionId};
+use agentfence_enforcement::backend::{
+    select_backend, ExecutionBackend, ExecutionMode, ExecutionRequest,
+};
 use agentfence_policy::{parser::load_policy, plugin_loader};
 use agentfence_secrets::redact::redact;
 use agentfence_shell::{command::ShellCommand, gateway::ShellGateway};
@@ -28,6 +31,18 @@ pub fn execute(policy_path: &str, command: &[String]) {
         }
     };
     let gateway = ShellGateway::new(pdp);
+
+    // SECURITY: the execution backend is selected once, from explicit
+    // configuration, before any command is evaluated. If the container backend
+    // is selected and its runtime is unavailable or its configuration invalid,
+    // the command fails closed: there is no host fallback path.
+    let backend = match select_backend(ExecutionMode::from_env()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Execution backend unavailable: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     let raw_cmd = command.join(" ");
     let cmd = match ShellCommand::parse(&raw_cmd) {
@@ -75,18 +90,9 @@ pub fn execute(policy_path: &str, command: &[String]) {
     match record.decision {
         Decision::Allow => {
             info!("Executing command: {}", redact(&raw_cmd).text);
-            let status = Command::new(&cmd.executable).args(&cmd.arguments).status();
-
-            match status {
-                Ok(s) => {
-                    if !s.success() {
-                        std::process::exit(s.code().unwrap_or(1));
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to execute command: {}", e);
-                    std::process::exit(1);
-                }
+            let code = run_backend(backend.as_ref(), &cmd);
+            if code != 0 {
+                std::process::exit(code);
             }
         }
         Decision::Deny => {
@@ -161,17 +167,9 @@ pub fn execute(policy_path: &str, command: &[String]) {
                     );
                     println!("Approved by operator; executing.");
                     info!("Executing approved command: {}", redact(&raw_cmd).text);
-                    let status = Command::new(&cmd.executable).args(&cmd.arguments).status();
-                    match status {
-                        Ok(s) => {
-                            if !s.success() {
-                                std::process::exit(s.code().unwrap_or(1));
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to execute command: {}", e);
-                            std::process::exit(1);
-                        }
+                    let code = run_backend(backend.as_ref(), &cmd);
+                    if code != 0 {
+                        std::process::exit(code);
                     }
                 }
                 Ok(false) => {
@@ -183,6 +181,38 @@ pub fn execute(policy_path: &str, command: &[String]) {
                     std::process::exit(1);
                 }
             }
+        }
+    }
+}
+
+/// Execute through the selected backend and propagate output and exit status.
+///
+/// The backend is the only place a command becomes a process. Both the plain
+/// allow path and the approved path go through here, so there is no second
+/// route to the runtime.
+fn run_backend(backend: &dyn ExecutionBackend, cmd: &ShellCommand) -> i32 {
+    let request = ExecutionRequest {
+        executable: &cmd.executable,
+        arguments: &cmd.arguments,
+        cwd: cmd.cwd.as_deref().map(Path::new),
+    };
+
+    match backend.execute(&request) {
+        Ok(result) => {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(&result.stdout);
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().write_all(&result.stderr);
+
+            if result.timed_out {
+                eprintln!("Execution timed out.");
+                return 124;
+            }
+            result.exit_code
+        }
+        Err(e) => {
+            eprintln!("Execution backend failure: {}", e);
+            1
         }
     }
 }

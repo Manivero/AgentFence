@@ -5,4 +5,5 @@
 
 pub mod error;
 pub mod identity;
+pub mod secure_fs;
 pub mod types;

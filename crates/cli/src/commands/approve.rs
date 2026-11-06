@@ -26,9 +26,9 @@ use agentfence_secrets::detector::SecretDetector;
 ///
 /// SECURITY: this is a **warning**, not redaction. The detector reports
 /// categories only and never returns the matched value, so nothing sensitive is
-/// printed here. The operator still sees the command, because they cannot make
-/// an informed decision without it — but they are told that it may carry a
-/// credential and that it is stored locally in plaintext.
+/// printed here. The operator still sees the command — redacted — because they
+/// cannot make an informed decision without it; the credential itself is
+/// masked both here and in the local approval database.
 fn warn_if_credential(record: &ApprovalRecord) {
     let secrets = SecretDetector::new().detect(&record.target, "approval.target");
     if secrets.is_empty() {
@@ -42,8 +42,9 @@ fn warn_if_credential(record: &ApprovalRecord) {
     eprintln!();
     eprintln!("⚠ WARNING: this command appears to contain a possible credential.");
     eprintln!("   detected: {}", categories.join(", "));
-    eprintln!("   The command text is stored in the local approval database and");
-    eprintln!("   shown here in plaintext. Verify it before approving.");
+    eprintln!("   The credential itself is masked here and in the local approval");
+    eprintln!("   database; the surrounding command is shown so you can judge the");
+    eprintln!("   action. Verify it before approving.");
     eprintln!();
 }
 

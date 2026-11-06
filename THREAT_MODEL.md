@@ -136,6 +136,22 @@ rejected and the action stays blocked.
 
 **Residual Risk:** Medium — HTTPS tunnel content is encrypted and cannot be inspected.
 
+### Local Storage Exposure
+
+| Asset | Threat | Mitigation | Residual risk |
+|---|---|---|---|
+| Approval store (`approvals.db`) | Another local account reads pending approvals, including command text | Directory restricted to the current account when AgentFence creates it; DB files always restricted | Pre-existing directories are reported, not hardened |
+| Audit store (`agentfence.db`) | Audit trail read or tampered with | Same as above; hash chain detects tampering | No encryption at rest |
+| Credentials in command text | A credential embedded in a command is written to disk or logs | `agentfence_secrets::redact` masks high-confidence shapes before persistence or display | Pattern-based; unknown shapes are not masked |
+| Journal files (`-wal`, `-shm`, `-journal`) | SQLite side files carry the same content as the DB | Restricted to the current account on open | None beyond the DB itself |
+| Operator approval authority | Any process that can run `agentfence approve` as the operator can approve | Approvals are digest-bound, single-use, scoped, and expiring | No separate operator authentication; documented trust boundary |
+| Direct store modification | Code running as the operator edits the DB | None | AgentFence does not protect against its own OS account |
+
+**Windows-specific:** `icacls /inheritance:r` applied to a directory strips
+inherited ACEs from every child object, leaving pre-existing files with an
+empty DACL. AgentFence therefore never rewrites a pre-existing directory; it
+reports it and restricts only directories it creates.
+
 ## Threats AgentFence Can Mitigate
 
 - Unauthorized shell commands

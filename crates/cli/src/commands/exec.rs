@@ -5,6 +5,7 @@ use std::process::Command;
 use agentfence_approval::broker::{ApprovalBroker, ApprovalConfig};
 use agentfence_core::types::{ActionId, AgentId, Decision, RiskLevel, SessionId};
 use agentfence_policy::{parser::load_policy, plugin_loader};
+use agentfence_secrets::redact::redact;
 use agentfence_shell::{command::ShellCommand, gateway::ShellGateway};
 use tracing::{error, info};
 
@@ -47,7 +48,7 @@ pub fn execute(policy_path: &str, command: &[String]) {
 
     println!("AgentFence Exec");
     println!("===============");
-    println!("Command: {}", raw_cmd);
+    println!("Command: {}", redact(&raw_cmd).text);
     println!("Decision: {}", record.decision);
     println!("Rule:     {}", record.rule_id);
     println!("Reason:   {}", record.reason);
@@ -73,7 +74,7 @@ pub fn execute(policy_path: &str, command: &[String]) {
 
     match record.decision {
         Decision::Allow => {
-            info!("Executing command: {}", raw_cmd);
+            info!("Executing command: {}", redact(&raw_cmd).text);
             let status = Command::new(&cmd.executable).args(&cmd.arguments).status();
 
             match status {
@@ -159,7 +160,7 @@ pub fn execute(policy_path: &str, command: &[String]) {
                         &record.policy_version,
                     );
                     println!("Approved by operator; executing.");
-                    info!("Executing approved command: {}", raw_cmd);
+                    info!("Executing approved command: {}", redact(&raw_cmd).text);
                     let status = Command::new(&cmd.executable).args(&cmd.arguments).status();
                     match status {
                         Ok(s) => {

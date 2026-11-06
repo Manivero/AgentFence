@@ -90,6 +90,32 @@
 - [x] Credential-in-command warning on the approval path (categories only)
 - [x] `wasmtime` updated past RUSTSEC-2026-0422
 
+## Local Approval Storage Security ✅
+
+Harden local approval storage, audit storage, credential handling, and operator
+access assumptions.
+
+**Implemented**
+
+- Storage-flow map for approval records, audit events, journal files, and CLI
+  output (`SECURITY.md` → "Local Storage Security").
+- `agentfence-core::secure_fs`: Unix `0700`/`0600`; Windows
+  `icacls /inheritance:r /grant:r <user>:F`; database files always restricted.
+- Pre-existing directories are reported, never rewritten — `icacls
+  /inheritance:r` strips inherited ACEs from child objects, leaving them with an
+  empty DACL.
+- `agentfence_secrets::redact`: high-confidence credential masking applied
+  before command text is persisted (approval store, audit store) or displayed
+  (CLI, logs).
+- Operator trust boundary documented: approval authority is possession of the
+  local operator terminal; no separate operator authentication.
+
+**Tests**: 24 added (`secrets` 9, `core` 5, `audit` 5, `cli` 5).
+
+**Known limitations**: pattern-based redaction; pre-existing directories
+reported not hardened; no encryption at rest; no protection against an OS
+administrator or same-account code.
+
 ## Phase 9 — Hermes ✅
 
 - [x] Working Hermes wrapper

@@ -4,3 +4,4 @@
 //! Must never emit raw secrets.
 
 pub mod detector;
+pub mod redact;

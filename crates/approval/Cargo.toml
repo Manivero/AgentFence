@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 agentfence-core = { path = "../core" }
 agentfence-audit = { path = "../audit" }
+agentfence-secrets = { path = "../secrets" }
 dirs-next = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }

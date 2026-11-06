@@ -29,3 +29,6 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 dirs-next = "2"
+
+[dev-dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }

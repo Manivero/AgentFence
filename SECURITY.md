@@ -284,6 +284,80 @@ Supported scopes:
 
 Approvals are narrow by default. Never promote a one-shot approval into a permanent permission unless the user explicitly asks.
 
+## Local Storage Security
+
+### What is stored, and where
+
+| Data | Location | Written by |
+|---|---|---|
+| Approval records (redacted target, digest, scope, expiry) | `approvals.db` | `agentfence-approval` |
+| Audit events (redacted target, `args_hash`, decision, rule) | `agentfence.db` | `agentfence-audit` |
+| Approval / audit journal files | `*-wal`, `*-shm`, `*-journal` next to the DB | SQLite |
+| AgentFence stdout/stderr | operator terminal or log capture | `agentfence-cli` |
+| `AGENTFENCE_DATA_DIR` | operator-chosen; default `%APPDATA%gentfence` | operator |
+
+### Credential exposure
+
+`Action::target` for shell actions is the raw command line. AgentFence redacts
+high-confidence credential shapes before that text is written to the approval
+store, the audit store, the CLI display, or any log line. Redaction is
+performed by `agentfence_secrets::redact` and covers GitHub, AWS, Google,
+Slack, Stripe, npm, PyPI, bearer, JWT, and private-key patterns.
+
+**Redaction is defence in depth, not an authorization control.** It matches
+known shapes; a credential that does not match a known pattern is not masked.
+The authorization decision is made by policy over the original action, and the
+approval binding is the action digest, which is computed from the original
+action and is unaffected by redaction.
+
+`Action::args_hash` and the audit hash chain are computed from the original
+values, so correlation and tamper-evidence are preserved.
+
+### Filesystem permissions
+
+`agentfence-core::secure_fs` restricts AgentFence-created directories to the
+current OS account:
+
+- **Unix**: directory `0700`, database files `0600`.
+- **Windows**: the directory is restricted to the current user with
+  `icacls /inheritance:r /grant:r <user>:F`.
+
+**A pre-existing data directory is never rewritten.** On Windows,
+`icacls /inheritance:r` applied to a directory also strips the inherited ACEs
+of every child object, which leaves pre-existing files with an empty DACL and
+locks the operator out of their own data. AgentFence therefore reports a
+pre-existing directory as unverified and warns the operator to check it, rather
+than modifying it.
+
+Database files (`approvals.db`, `agentfence.db`, and their `-wal`/`-shm`/
+`-journal` companions) are restricted to the current account whenever they are
+opened, because files have no children and the operation is not destructive.
+
+AgentFence does **not** claim host-wide filesystem protection. An OS
+administrator, or code running under the same account, can read the stores.
+
+### Operator authority
+
+Approval authority is **possession of the local operator terminal**. Any
+process that can run `agentfence approve` in the operator's session can approve
+an action, and any process running as the same OS account can read or modify
+the stores directly. AgentFence provides no separate operator authentication;
+this is a documented trust boundary, not a control.
+
+Approvals are narrow by default (`once`), bound to the action digest, and
+expire. The agent cannot approve its own action: approvals are issued through
+the CLI, never through the agent's own channel.
+
+### Known limitations
+
+- Redaction is pattern-based; unknown credential shapes are not masked.
+- A pre-existing data directory is reported, not hardened.
+- SQLite stores are protected by OS permissions only; they are not encrypted
+  at rest. Disk encryption (BitLocker, FileVault, LUKS) remains the operator's
+  responsibility.
+- AgentFence does not protect against an OS administrator or code running under
+  the same account.
+
 ## Known Limitations
 
 - Cooperative mode only — no OS-level enforcement

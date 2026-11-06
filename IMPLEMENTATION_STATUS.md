@@ -538,6 +538,70 @@ added, because a partial one would be worse than the documented boundary.
 (`crates/cli/tests/approval_flow.rs`) — including a true two-process race where
 two separate OS processes compete for one approval.
 
+## Phase 11 — Local Approval Storage Security
+
+### Storage map
+
+| Data | Location | Written by |
+|---|---|---|
+| Approval records | `approvals.db` (`target`, `action_digest`, scope, expiry) | `agentfence-approval` |
+| Audit events | `agentfence.db` (`target`, `args_hash`, decision, rule) | `agentfence-audit` |
+| Journal files | `*-wal`, `*-shm`, `*-journal` | SQLite |
+| CLI output | stdout/stderr | `agentfence-cli` |
+
+### Filesystem permissions
+
+`agentfence-core::secure_fs`:
+
+- Unix: directory `0700`, database files `0600`.
+- Windows: directory restricted to the current account via
+  `icacls /inheritance:r /grant:r <user>:F`.
+- Database files are restricted whenever opened.
+- **A pre-existing directory is never rewritten.** `icacls /inheritance:r`
+  strips inherited ACEs from child objects too, which would leave pre-existing
+  files with an empty DACL and lock the operator out. Such directories are
+  reported as unverified and the operator is warned.
+
+Wired into: `ApprovalService::new_with_db`, `SqliteStore::new`,
+`db::ensure_db_path`.
+
+### Credential exposure
+
+`agentfence_secrets::redact` masks high-confidence credential shapes
+(GitHub, AWS, Google, Slack, Stripe, npm, PyPI, bearer, JWT, private keys)
+before command text is persisted or displayed.
+
+Applied at:
+
+- `ApprovalService::request_pending` — stored `target`;
+- `AuditEvent::new` — stored and exported `target`;
+- `exec.rs` logging and `approve.rs` display.
+
+Digests and `args_hash` are computed from the original values, so approval
+binding and the audit hash chain are unaffected.
+
+### Operator authority
+
+Approval authority is possession of the local operator terminal. There is no
+separate operator authentication; this is a documented trust boundary.
+
+### Tests added
+
+| Harness | Tests |
+|---|---|
+| `agentfence-secrets` (redact) | 9 |
+| `agentfence-core` (secure_fs) | 5 |
+| `agentfence-audit` (`tests/redaction.rs`) | 5 |
+| `agentfence-cli` (`tests/secrecy.rs`) | 5 |
+
+### Known limitations
+
+- Redaction is pattern-based; unknown credential shapes are not masked.
+- A pre-existing data directory is reported, not hardened.
+- Stores are not encrypted at rest.
+- AgentFence does not protect against an OS administrator or code running under
+  the same account.
+
 ## Self-Review Gate (Section 39)
 
 | Question | Answer |

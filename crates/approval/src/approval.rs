@@ -232,15 +232,24 @@ impl ApprovalService {
     pub fn new_with_db(db_path: std::path::PathBuf) -> Result<Self> {
         // The approval store must be usable from a bare path: a gateway that
         // records a request must not fail because the data directory is missing.
+        //
+        // SECURITY: the directory is restricted to the current OS user. An
+        // approval record *authorises an action*, so a store that another local
+        // account can read would also let that account approve on the
+        // operator's behalf.
         if let Some(parent) = db_path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    AgentFenceError::Enforcement(format!(
-                        "cannot create approval database directory {}: {}",
-                        parent.display(),
-                        e
-                    ))
-                })?;
+                let report =
+                    agentfence_core::secure_fs::prepare_db_path(&db_path).map_err(|e| {
+                        AgentFenceError::Enforcement(format!(
+                            "cannot prepare approval database directory {}: {}",
+                            parent.display(),
+                            e
+                        ))
+                    })?;
+                for issue in &report.issues {
+                    tracing::warn!("approval store permissions: {}", issue);
+                }
             }
         }
 
@@ -421,7 +430,12 @@ impl ApprovalService {
             agent_id: Some(action.agent_id.clone()),
             action_digest: action.digest(),
             tool: action.tool.clone(),
-            target: action.target.clone(),
+            // SECURITY: the stored target is a *display* copy. The authorization
+            // binding is `action_digest`, computed from the original action
+            // above and unaffected by redaction, so the operator still approves
+            // exactly one action and it is verified on consumption. Credentials
+            // embedded in the command are masked before they reach disk.
+            target: agentfence_secrets::redact::redact(&action.target).text,
             reason: reason.into(),
             scope,
             issued_at,

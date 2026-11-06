@@ -33,6 +33,28 @@ impl std::fmt::Debug for SqliteStore {
 impl SqliteStore {
     /// Create a new SQLite store at the given path.
     pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self> {
+        // SECURITY: the audit trail records what the agent did, including the
+        // action target. The directory is restricted to the current OS user
+        // before the database is opened.
+        if let Some(parent) = db_path.as_ref().parent() {
+            if !parent.as_os_str().is_empty() {
+                match agentfence_core::secure_fs::prepare_db_path(db_path.as_ref()) {
+                    Ok(report) => {
+                        for issue in &report.issues {
+                            tracing::warn!("audit store permissions: {}", issue);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "cannot restrict audit database directory {}: {}",
+                            parent.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
         let conn = Connection::open(db_path)?;
         let store = Self { conn };
         store.init()?;

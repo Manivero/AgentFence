@@ -16,7 +16,15 @@ pub fn get_db_path() -> PathBuf {
 /// Ensure the parent directory exists for the database.
 pub fn ensure_db_dir(db_path: &std::path::Path) -> std::io::Result<()> {
     if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        if !parent.as_os_str().is_empty() {
+            // SECURITY: the audit database holds the action target, so the
+            // directory is restricted to the current OS user. Failures are
+            // surfaced to the operator rather than silently ignored.
+            let report = agentfence_core::secure_fs::prepare_db_path(db_path)?;
+            for issue in &report.issues {
+                eprintln!("Warning: {}", issue);
+            }
+        }
     }
     Ok(())
 }

@@ -69,7 +69,13 @@ impl AuditEvent {
             timestamp,
             action_type: action_type.into(),
             tool: tool.into(),
-            target: target.into(),
+            // SECURITY: the target is a display/correlation field. It is redacted
+            // before it reaches the audit store so that a credential embedded in
+            // a shell command, URL or header is not written to disk. The event
+            // hash chain is computed over the redacted value, so tamper
+            // evidence is preserved; `args_hash` still commits to the original
+            // arguments supplied by the caller.
+            target: agentfence_secrets::redact::redact(&target.into()).text,
             args_hash: args_hash.into(),
             decision,
             risk_level,

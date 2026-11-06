@@ -85,6 +85,35 @@ impl ShellCommand {
         })
     }
 
+    /// Build a command from an already-tokenized argument vector.
+    ///
+    /// Use this instead of [`ShellCommand::parse`] when the caller already holds
+    /// a tokenized command line (for example a CLI subcommand's trailing
+    /// arguments). Joining the tokens back into one string and re-tokenizing
+    /// would silently split arguments that contain spaces, so the command that
+    /// is evaluated and executed would no longer be the command the caller
+    /// asked for.
+    ///
+    /// `raw` is rebuilt with minimal shell quoting so that it stays a faithful
+    /// representation of the token vector for display, secret detection and
+    /// policy matching.
+    pub fn from_argv(argv: &[String]) -> crate::command::Result<Self> {
+        if argv.is_empty() {
+            return Err(crate::command::CommandError::EmptyCommand);
+        }
+        let raw = argv
+            .iter()
+            .map(|a| shell_words::quote(a).into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        Ok(Self {
+            executable: argv[0].clone(),
+            arguments: argv[1..].to_vec(),
+            cwd: None,
+            raw,
+        })
+    }
+
     /// Check if this command contains dangerous patterns.
     ///
     /// Analyzes the raw command string for shell metacharacters,
@@ -232,6 +261,58 @@ fn tokenize(input: &str) -> crate::command::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_from_argv_preserves_argument_boundaries() {
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo ran > /data/sentinel".to_string(),
+        ];
+        let cmd = ShellCommand::from_argv(&argv).unwrap();
+        assert_eq!(cmd.executable, "sh");
+        assert_eq!(cmd.arguments, vec!["-c", "echo ran > /data/sentinel"]);
+    }
+
+    #[test]
+    fn test_from_argv_rebuilds_raw_that_survives_reparsing() {
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo ran > /data/sentinel".to_string(),
+        ];
+        let cmd = ShellCommand::from_argv(&argv).unwrap();
+        let reparsed = ShellCommand::parse(&cmd.raw).unwrap();
+        assert_eq!(reparsed.executable, cmd.executable);
+        assert_eq!(reparsed.arguments, cmd.arguments);
+    }
+
+    #[test]
+    fn test_from_argv_empty_is_an_error() {
+        assert!(ShellCommand::from_argv(&[]).is_err());
+    }
+
+    #[test]
+    fn test_join_and_reparse_would_have_split_the_payload() {
+        // Documents the defect `from_argv` exists to prevent: joining the token
+        // vector and re-tokenizing silently splits a quoted payload.
+        let argv = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo ran > /data/sentinel".to_string(),
+        ];
+        let naive = ShellCommand::parse(&argv.join(" ")).unwrap();
+        // "sh -c echo ran > /data/sentinel" tokenizes to six tokens: the
+        // executable plus five arguments. The payload became four of them
+        // instead of one.
+        assert_eq!(
+            naive.arguments.len(),
+            5,
+            "the naive path splits the payload"
+        );
+        let correct = ShellCommand::from_argv(&argv).unwrap();
+        assert_eq!(correct.arguments.len(), 2);
+    }
 
     #[test]
     fn test_parse_simple() {

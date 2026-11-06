@@ -7,6 +7,7 @@
 //! `SECURITY.md`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use agentfence_enforcement::backend::{
     select_backend, ContainerBackend, ExecutionError, ExecutionMode,
@@ -376,6 +377,51 @@ fn select_backend_fails_closed_for_a_missing_container_runtime() {
 
     let err = select_backend(ExecutionMode::Container(config)).expect_err("must fail");
     assert!(matches!(err, ExecutionError::RuntimeUnavailable { .. }));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Serializes tests that mutate the process environment.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn an_unreadable_container_config_is_an_error_not_a_silent_default() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = scratch("cfg-missing");
+    std::env::set_var("AGENTFENCE_EXECUTION_BACKEND", "container");
+    std::env::set_var(
+        "AGENTFENCE_CONTAINER_CONFIG",
+        dir.join("does-not-exist.json")
+            .to_string_lossy()
+            .into_owned(),
+    );
+
+    let err = ExecutionMode::from_env().expect_err("a missing config must be an error");
+    assert!(err.contains("cannot read container config"), "{err}");
+
+    std::env::remove_var("AGENTFENCE_CONTAINER_CONFIG");
+    std::env::remove_var("AGENTFENCE_EXECUTION_BACKEND");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_malformed_container_config_is_an_error_not_a_silent_default() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = scratch("cfg-bad");
+    let bad = dir.join("config.json");
+    // A Windows path with unescaped backslashes is not valid JSON, which is
+    // exactly how a hand-written config ends up in practice.
+    std::fs::write(&bad, "{\"mounts\": [{\"host_path\": \"C:\\temp\"}]}").unwrap();
+    std::env::set_var("AGENTFENCE_EXECUTION_BACKEND", "container");
+    std::env::set_var(
+        "AGENTFENCE_CONTAINER_CONFIG",
+        bad.to_string_lossy().into_owned(),
+    );
+
+    let err = ExecutionMode::from_env().expect_err("malformed JSON must be an error");
+    assert!(err.contains("invalid container config"), "{err}");
+
+    std::env::remove_var("AGENTFENCE_CONTAINER_CONFIG");
+    std::env::remove_var("AGENTFENCE_EXECUTION_BACKEND");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

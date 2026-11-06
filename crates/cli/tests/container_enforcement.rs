@@ -59,6 +59,17 @@ fn make_fake_runtime(dir: &Path) -> PathBuf {
         script.push_str("if \"%1\"==\"--version\" exit /b 0\r\n");
         script.push_str("if \"%1\"==\"kill\" exit /b 0\r\n");
         script.push_str("if \"%1\"==\"rm\" exit /b 0\r\n");
+        // Argument count. Echoing arguments directly is not safe here: a `>` or
+        // `|` inside an argument would be reinterpreted by cmd as a redirection
+        // or a pipe, so the count is the reliable signal.
+        script.push_str("set COUNT=0\r\n");
+        script.push_str(":countloop\r\n");
+        script.push_str("if \"%~1\"==\"\" goto countdone\r\n");
+        script.push_str("set /a COUNT+=1\r\n");
+        script.push_str("shift\r\n");
+        script.push_str("goto countloop\r\n");
+        script.push_str(":countdone\r\n");
+        script.push_str("echo argc=%COUNT% >> \"%DIR%runtime.log\"\r\n");
         script.push_str("echo fake stdout\r\n");
         script.push_str("exit /b 0\r\n");
         std::fs::write(&p, script).unwrap();
@@ -74,6 +85,10 @@ fn make_fake_runtime(dir: &Path) -> PathBuf {
         script.push_str("printf '%s\\n' \"$*\" >> \"$DIR/runtime.log\"\n");
         script.push_str("if [ \"$1\" = \"--version\" ]; then exit 0; fi\n");
         script.push_str("if [ \"$1\" = \"kill\" ] || [ \"$1\" = \"rm\" ]; then exit 0; fi\n");
+        // Argument count.
+        script.push_str("COUNT=0\n");
+        script.push_str("for a in \"$@\"; do COUNT=$((COUNT+1)); done\n");
+        script.push_str("printf 'argc=%s\\n' \"$COUNT\" >> \"$DIR/runtime.log\"\n");
         script.push_str("echo 'fake stdout'\n");
         script.push_str("exit 0\n");
         std::fs::write(&p, script).unwrap();
@@ -351,5 +366,58 @@ fn credentials_in_the_command_are_not_printed_by_the_cli() {
     assert!(
         !combined.contains(token),
         "the credential reached the CLI output:\n{combined}"
+    );
+}
+
+#[test]
+fn a_quoted_payload_reaches_the_runtime_as_one_argument() {
+    let dir = TempDir::new("quoting");
+    let runtime_dir = dir.path.join("runtime");
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    let runtime = make_fake_runtime(&runtime_dir);
+    let policy = write_allow_policy(&dir);
+
+    let payload = "echo ran > /data/sentinel";
+    let out = run_agentfence(
+        &[
+            "exec",
+            "--policy",
+            policy.to_str().unwrap(),
+            "--",
+            "sh",
+            "-c",
+            payload,
+        ],
+        &dir.path,
+        &runtime,
+    );
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "output: {}",
+        stdout_plus_stderr(&out)
+    );
+
+    let log = std::fs::read_to_string(runtime_dir.join("runtime.log")).unwrap();
+    // The `-c` payload contains spaces and shell metacharacters. It must arrive
+    // as exactly one argument; joining the argv and re-tokenizing it would
+    // split it and silently change the executed command.
+    //
+    // The invocation is:
+    //   docker run --rm --name <n> --init --user 1000:1000 --cpus 1.00
+    //     --memory 512m --memory-swap 512m --pids-limit 256 --read-only
+    //     --tmpfs /tmp:... --network none --cap-drop ALL
+    //     --security-opt no-new-privileges:true --workdir /workspace
+    //     alpine:latest sh -c "<payload>"
+    // = 29 arguments before the payload plus the payload itself.
+    let argc = log
+        .lines()
+        .find_map(|l| l.strip_prefix("argc="))
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .expect("argc line");
+    assert_eq!(
+        argc, 30,
+        "the -c payload must be a single argument; it was split: {log}"
     );
 }

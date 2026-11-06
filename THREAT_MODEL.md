@@ -162,11 +162,13 @@ reports it and restricts only directories it creates.
 | Host network | Exfiltration or lateral movement | `--network none` by default | Any enabled network path is fully accessible |
 | Host resources | CPU, memory, or PID exhaustion | `--cpus`, `--memory`, `--memory-swap`, `--pids-limit`, timeout with container kill | Limits are runtime-enforced, not guaranteed against a runtime bug |
 
-**Verification status:** these mitigations are asserted by configuration and
-exercised by fake-runtime tests only. No Docker or Podman runtime was available
-in the verification environment, so **real container isolation has not been
-verified**. The residual risks above are control limitations; the absence of
-real-runtime verification is a separate, unresolved gap.
+**Verification status:** the mitigations above were verified against a real
+Docker Engine (Docker Desktop 4.98.0, Engine 29.9.2, WSL2) on Windows 11:
+non-root UID, read-only root filesystem, `CapEff=0`, `NoNewPrivs=1`, the declared
+resource limits, `NetworkMode=none`, `/tmp` tmpfs, and timeout kill were all read
+back from `docker inspect` or from inside the container. Linux Docker, Podman,
+Windows Containers mode, and concurrent/adversarial execution remain unverified.
+The residual risks above are control limitations that no configuration removes.
 
 ## Threats AgentFence Can Mitigate
 

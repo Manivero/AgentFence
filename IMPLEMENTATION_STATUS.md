@@ -673,6 +673,93 @@ Installing a runtime was out of scope, so **real isolation was not verified**.
 configured MCP server. `os_enforcement`, `vm`, and `wsl` are not wired to any
 execution path. No remaining host-execution path was found.
 
+## Phase 12.2 - Real Docker Engine Security Verification
+
+Docker Desktop 4.98.0 was installed for this phase and the opt-in real-runtime
+suites were executed against a real Docker Engine. This is the first phase where
+container isolation was actually observed rather than inferred.
+
+### Runtime
+
+| Item | Value |
+|------|-------|
+| Docker Desktop | 4.98.0 (installed via WinGet `Docker.DockerDesktop`, installer hash verified) |
+| Docker Engine | 29.9.2, `linux/amd64` |
+| Context | `desktop-linux` (WSL2 backend, Linux containers) |
+| Kernel | `6.6.87.2-microsoft-standard-WSL2` |
+| Storage driver | `overlayfs` |
+| Cgroup version | 2 |
+| Default runtime | `runc` |
+| Seccomp | `builtin` profile |
+| Test image | `alpine:3.19` @ `sha256:6baf43584bcb78f2e5847d1de515f23499913ac9f12bdf834811a3145eb11ca1` |
+| Image default user | none (root) — AgentFence overrides with `--user 1000:1000` |
+
+### Controls verified against the real engine
+
+All values below were read from `docker inspect` or from inside the container;
+none are inferred from the command line AgentFence passes.
+
+| Control | Observed |
+|---------|----------|
+| Non-root execution | `User=1000:1000`, `id` reports `uid=1000 gid=1000` |
+| UID 0 rejected | configuration validation refuses `run_as_uid: 0` |
+| Read-only root filesystem | `ReadonlyRootfs=true`; `touch /etc/probe` → `Read-only file system` |
+| Declared mounts only | `real_runtime_only_sees_declared_mounts` passes |
+| Capabilities dropped | `CapEff=0000000000000000`, `CapBnd=0000000000000000` |
+| NoNewPrivs | `NoNewPrivs: 1`; `su` reports `must be suid to work properly` |
+| CPU limit | `NanoCpus=500000000` (0.5) |
+| Memory limit | `Memory=134217728` (128 MiB) |
+| Swap disabled | `MemorySwap=134217728` (equal to memory) |
+| PID limit | `PidsLimit=64` |
+| Network isolation | `NetworkMode=none`; external endpoints unreachable |
+| `/tmp` | `drwxrwxrwt`, tmpfs, writable by uid 1000 |
+| Timeout and cleanup | `real_runtime_timeout_kills_the_container` passes; no orphans left |
+| stdout / stderr / exit code | propagated |
+| Secrets in logs | `target` stored as `[REDACTED]`, no column contains the raw token |
+
+### Real-runtime test results
+
+| Suite | Result |
+|-------|--------|
+| `crates/cli/tests/real_container_runtime.rs` | **16 passed / 0 failed** (15 executed, 1 skipped: the fail-closed path cannot be exercised while the daemon is up) |
+| `crates/hermes/tests/real_container_backend.rs` | **3 passed / 0 failed** |
+
+The 1 skipped test is expected: with a reachable daemon there is no way to
+observe the "daemon missing" path. It is covered separately by the fake-runtime
+suite, which reports a missing runtime as an error.
+
+### Defects found and fixed
+
+- **Quoted arguments were destroyed.** `agentguard exec` joined the trailing
+  argv with spaces and re-tokenized the result, so `sh -c "echo a > b"` was
+  executed as `sh -c echo a > b` — the payload was split and the command that
+  ran was not the command that was evaluated. Added
+  `ShellCommand::from_argv`, which keeps argument boundaries, and rebuilt `raw`
+  with `shell_words::quote` so display, secret detection and policy matching
+  stay faithful.
+- **An unreadable container config silently fell back to defaults.**
+  `container_config_from_env` discarded read and parse errors, so a malformed
+  `AGENTFENCE_CONTAINER_CONFIG` (for example a Windows path with unescaped
+  backslashes) silently dropped every declared mount. `ExecutionMode::from_env`
+  now returns `Result` and the failure is fatal — fail closed, not fail open.
+- **Brittle real-runtime assertion.** The limits test compared raw JSON
+  substrings (`"ReadonlyRootfs":true`), which no longer matches the daemon's
+  rendering, and looked for a `NetworkDisabled` field that does not exist in
+  Docker 29.x. Values are now read through Go templates and asserted exactly.
+
+### Remaining limitations
+
+- Verified on **Windows 11 + WSL2 + Docker Desktop** only. Docker on Linux, and
+  Podman on any platform, are unverified.
+- The engine's own isolation (runc, overlayfs, seccomp) is trusted; AgentFence
+  configures it and does not implement it.
+- `Hyper-V` and `HypervisorPlatform` are disabled on this host; the WSL2
+  backend was used. Windows Containers mode is unverified.
+- Concurrent execution was not stress-tested; container names are UUIDs, so
+  collisions are not expected, but no load test was run.
+- Host-mount validation, TOCTOU between runtime discovery and execution, and
+  env/credential propagation were reviewed but not adversarially tested.
+
 ## Self-Review Gate (Section 39)
 
 | Question | Answer |

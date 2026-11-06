@@ -142,15 +142,22 @@ Replace the container execution placeholder with a real backend.
 - [x] Fail closed on a missing runtime or invalid configuration.
 - [x] Credentials redacted in AgentFence logs.
 - [x] Fake-runtime tests plus end-to-end enforcement tests.
-- [ ] Verified against a real container runtime (not yet performed).
+- [x] Verified against a real container runtime (Docker Desktop 4.98.0, Engine
+      29.9.2, WSL2) — see Phase 12.2.
 
-## Real Container Runtime Verification ⏳
+## Real Container Runtime Verification ✅
 
 - [x] Runtime discovery performed; no Docker or Podman available.
 - [x] Hermes wrapper host bypass found and fixed.
 - [x] Opt-in real-runtime suite authored (skips without a runtime).
 - [x] Container kill retry added.
-- [ ] Real isolation verified against a live runtime (blocked: no runtime).
+- [x] Real isolation verified against a live runtime (16 CLI tests passing, 1
+      skipped because the fail-closed path is unobservable with a live daemon;
+      3 Hermes tests passing).
+- [x] Quoted-argument loss fixed (`ShellCommand::from_argv`).
+- [x] Silent container-config fallback fixed (now fails closed).
+- [ ] Verified on Linux Docker and Podman (not performed).
+- [ ] Concurrent execution stress test (not performed).
 
 ## Post-MVP v0.2 — In Progress
 

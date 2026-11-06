@@ -42,7 +42,7 @@ impl HermesWrapper {
     /// fails closed: the wrapper is not created and nothing executes on the
     /// host in its place.
     pub fn with_pdp(pdp: Pdp) -> Result<Self, Box<dyn std::error::Error>> {
-        let backend = select_backend(ExecutionMode::from_env())?;
+        let backend = select_backend(ExecutionMode::from_env()?)?;
         Ok(Self {
             pdp,
             session_id: SessionId::new(),

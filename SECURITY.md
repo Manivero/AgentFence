@@ -440,27 +440,39 @@ rejected during configuration validation.
 
 ### Real-runtime verification status
 
-The container backend was verified against a **fake** runtime only. No Docker or
-Podman CLI or daemon was present in the verification environment, and installing
-one was out of scope.
+Real container isolation **was verified** against a real Docker Engine on
+Windows 11 (Docker Desktop 4.98.0, Engine 29.9.2, WSL2 backend, Linux
+containers), using `alpine:3.19` pinned by digest
+`sha256:6baf43584bcb78f2e5847d1de515f23499913ac9f12bdf834811a3145eb11ca1`.
 
-**Real container isolation has not been verified.** The automated suite proves
-invocation construction, fail-closed behaviour, and the enforcement invariants;
-it does not prove isolation, non-root execution, read-only filesystems,
-capability drops, resource limits, or network isolation as actually enforced by
-a runtime.
+Verified by `docker inspect` and in-container measurement, not inferred from the
+command line: non-root UID 1000, read-only root filesystem, `CapEff=0` with an
+empty bounding set, `NoNewPrivs=1`, CPU/memory/swap/PID limits, `NetworkMode=none`,
+`/tmp` as a writable tmpfs, timeout kill with no orphaned containers, and
+stdout/stderr/exit-code propagation.
 
-An opt-in suite exists for a machine that does have a runtime:
+Scope of that claim:
+
+- **Platform:** Windows 11 + WSL2 + Docker Desktop only. Linux Docker and Podman
+  on any platform are unverified.
+- **What is trusted:** the engine's own isolation (runc, overlayfs, seccomp).
+  AgentFence configures these; it does not implement them.
+- **Not stress-tested:** concurrent execution and adversarial mount or TOCTOU
+  attacks.
+
+The opt-in suites are the reproducible evidence:
 
 ```bash
-AGENTFENCE_REAL_RUNTIME_TEST=1 cargo test -p agentfence-cli --test real_container_runtime -- --nocapture
+AGENTFENCE_REAL_RUNTIME_TEST=1 cargo test -p agentfence-cli --test real_container_runtime -- --test-threads=1
+AGENTFENCE_REAL_RUNTIME_TEST=1 cargo test -p agentfence-hermes --test real_container_backend -- --test-threads=1
 ```
 
-It skips every test unless `AGENTFENCE_REAL_RUNTIME_TEST=1` is set, so it can
-never be mistaken for a passing verification. It checks effective UID, read-only
-root filesystem, `CapEff`/`NoNewPrivs` from `/proc/self/status`, `inspect`
-output for `ReadonlyRootfs` and `NetworkDisabled`, timeout kill, mount
-visibility, and output/exit-code propagation.
+Both skip every test unless `AGENTFENCE_REAL_RUNTIME_TEST=1` is set, so neither
+can be mistaken for a passing verification on a machine without a runtime. With
+the variable set but no daemon reachable, the CLI suite fails loudly and the
+Hermes suite skips — neither reports success. The fake-runtime suite remains the
+default and proves invocation construction and fail-closed behaviour only; it
+provides no isolation.
 
 ### Execution entry points
 

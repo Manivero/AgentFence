@@ -36,7 +36,14 @@ pub fn execute(policy_path: &str, command: &[String]) {
     // configuration, before any command is evaluated. If the container backend
     // is selected and its runtime is unavailable or its configuration invalid,
     // the command fails closed: there is no host fallback path.
-    let backend = match select_backend(ExecutionMode::from_env()) {
+    let mode = match ExecutionMode::from_env() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Execution backend unavailable: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let backend = match select_backend(mode) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("Execution backend unavailable: {}", e);
@@ -44,8 +51,7 @@ pub fn execute(policy_path: &str, command: &[String]) {
         }
     };
 
-    let raw_cmd = command.join(" ");
-    let cmd = match ShellCommand::parse(&raw_cmd) {
+    let cmd = match ShellCommand::from_argv(command) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to parse command: {}", e);
@@ -63,7 +69,7 @@ pub fn execute(policy_path: &str, command: &[String]) {
 
     println!("AgentFence Exec");
     println!("===============");
-    println!("Command: {}", redact(&raw_cmd).text);
+    println!("Command: {}", redact(&cmd.raw).text);
     println!("Decision: {}", record.decision);
     println!("Rule:     {}", record.rule_id);
     println!("Reason:   {}", record.reason);
@@ -80,7 +86,7 @@ pub fn execute(policy_path: &str, command: &[String]) {
         &session_id,
         &agent_id,
         &record.action_id,
-        &raw_cmd,
+        &cmd.raw,
         record.decision,
         record.risk_level,
         &record.rule_id,
@@ -89,7 +95,7 @@ pub fn execute(policy_path: &str, command: &[String]) {
 
     match record.decision {
         Decision::Allow => {
-            info!("Executing command: {}", redact(&raw_cmd).text);
+            info!("Executing command: {}", redact(&cmd.raw).text);
             let code = run_backend(backend.as_ref(), &cmd);
             if code != 0 {
                 std::process::exit(code);
@@ -159,14 +165,14 @@ pub fn execute(policy_path: &str, command: &[String]) {
                         &session_id,
                         &agent_id,
                         &record.action_id,
-                        &raw_cmd,
+                        &cmd.raw,
                         Decision::Allow,
                         record.risk_level,
                         &record.rule_id,
                         &record.policy_version,
                     );
                     println!("Approved by operator; executing.");
-                    info!("Executing approved command: {}", redact(&raw_cmd).text);
+                    info!("Executing approved command: {}", redact(&cmd.raw).text);
                     let code = run_backend(backend.as_ref(), &cmd);
                     if code != 0 {
                         std::process::exit(code);

@@ -162,7 +162,7 @@ impl ExecutionMode {
     /// `AGENTFENCE_EXECUTION_BACKEND` selects the backend. Unset or `host` means
     /// cooperative mode; `container` means the container backend, configured by
     /// the `AGENTFENCE_CONTAINER_*` variables documented in `SECURITY.md`.
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self, String> {
         match std::env::var("AGENTFENCE_EXECUTION_BACKEND")
             .ok()
             .as_deref()
@@ -171,9 +171,9 @@ impl ExecutionMode {
             .as_deref()
         {
             Some("container") | Some("docker") | Some("podman") => {
-                Self::Container(container_config_from_env())
+                Ok(Self::Container(container_config_from_env()?))
             }
-            _ => Self::Host,
+            _ => Ok(Self::Host),
         }
     }
 }
@@ -185,11 +185,20 @@ fn env_nonempty(key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-fn container_config_from_env() -> ContainerConfig {
-    let mut cfg = env_nonempty("AGENTFENCE_CONTAINER_CONFIG")
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str::<ContainerConfig>(&s).ok())
-        .unwrap_or_default();
+fn container_config_from_env() -> Result<ContainerConfig, String> {
+    // An explicitly supplied config that cannot be read or parsed is an error.
+    // Falling back to the defaults here would silently discard the operator's
+    // declared mounts and other settings, changing what the fence allows
+    // without telling anyone.
+    let mut cfg = match env_nonempty("AGENTFENCE_CONTAINER_CONFIG") {
+        Some(path) => {
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| format!("cannot read container config {path}: {e}"))?;
+            serde_json::from_str::<ContainerConfig>(&text)
+                .map_err(|e| format!("invalid container config {path}: {e}"))?
+        }
+        None => ContainerConfig::default(),
+    };
 
     if let Some(runtime) = env_nonempty("AGENTFENCE_CONTAINER_RUNTIME") {
         cfg.runtime = match runtime.to_ascii_lowercase().as_str() {
@@ -229,7 +238,7 @@ fn container_config_from_env() -> ContainerConfig {
     if let Some(v) = env_nonempty("AGENTFENCE_CONTAINER_READ_ONLY").map(|v| v == "true") {
         cfg.read_only_fs = v;
     }
-    cfg
+    Ok(cfg)
 }
 
 /// Select the backend once. Invalid configuration fails closed.

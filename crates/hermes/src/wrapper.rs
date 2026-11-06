@@ -3,10 +3,11 @@
 //! This module provides a wrapper that can be used as Hermes terminal backend
 //! to route shell commands through AgentFence policy evaluation.
 
-use std::process::Command;
-
 use agentfence_approval::broker::{ApprovalBroker, ApprovalConfig};
 use agentfence_core::types::{AgentId, SessionId};
+use agentfence_enforcement::backend::{
+    select_backend, ExecutionBackend, ExecutionMode, ExecutionRequest,
+};
 use agentfence_policy::{parser::load_policy, pdp::Pdp, plugin_loader};
 use agentfence_shell::{command::ShellCommand, gateway::ShellGateway};
 use tracing::{error, info};
@@ -18,6 +19,12 @@ pub struct HermesWrapper {
     pdp: Pdp,
     session_id: SessionId,
     agent_id: AgentId,
+    /// The only path from a policy decision to a running process.
+    ///
+    /// Both the plain allow path and the approved path go through this backend,
+    /// so selecting the container backend removes host execution here rather
+    /// than adding a second, host-only route.
+    backend: Box<dyn ExecutionBackend>,
 }
 
 impl HermesWrapper {
@@ -25,11 +32,22 @@ impl HermesWrapper {
     pub fn new(policy_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let policy = load_policy(policy_path)?;
         let pdp = plugin_loader::build_pdp(policy, Vec::new())?;
+        Self::with_pdp(pdp)
+    }
 
+    /// Build a wrapper around an already-constructed PDP.
+    ///
+    /// The backend is selected once, from explicit configuration. If the
+    /// container backend is selected and its runtime is unavailable, this
+    /// fails closed: the wrapper is not created and nothing executes on the
+    /// host in its place.
+    pub fn with_pdp(pdp: Pdp) -> Result<Self, Box<dyn std::error::Error>> {
+        let backend = select_backend(ExecutionMode::from_env())?;
         Ok(Self {
             pdp,
             session_id: SessionId::new(),
             agent_id: AgentId::new("hermes"),
+            backend,
         })
     }
 
@@ -48,11 +66,7 @@ impl HermesWrapper {
         match record.decision {
             agentfence_core::types::Decision::Allow => {
                 info!("ALLOWED: {} (rule: {})", command, record.rule_id);
-                let status = Command::new(&cmd.executable)
-                    .args(&cmd.arguments)
-                    .status()?;
-
-                Ok(status.success())
+                Ok(self.run(&cmd))
             }
             agentfence_core::types::Decision::Deny => {
                 info!("DENIED: {} (rule: {})", command, record.rule_id);
@@ -90,10 +104,7 @@ impl HermesWrapper {
                 match broker.wait_for(&approval.approval_id, &action, None) {
                     Ok(true) => {
                         info!("APPROVED: {} (rule: {})", command, record.rule_id);
-                        let status = Command::new(&cmd.executable)
-                            .args(&cmd.arguments)
-                            .status()?;
-                        Ok(status.success())
+                        Ok(self.run(&cmd))
                     }
                     Ok(false) => {
                         info!(
@@ -107,6 +118,25 @@ impl HermesWrapper {
                         Ok(false)
                     }
                 }
+            }
+        }
+    }
+
+    /// Execute through the selected backend.
+    ///
+    /// Returns `false` when the backend refused or the command failed, so a
+    /// policy-allowed action can never report success it did not achieve.
+    fn run(&self, cmd: &ShellCommand) -> bool {
+        let request = ExecutionRequest {
+            executable: &cmd.executable,
+            arguments: &cmd.arguments,
+            cwd: cmd.cwd.as_deref().map(std::path::Path::new),
+        };
+        match self.backend.execute(&request) {
+            Ok(result) => result.exit_code == 0,
+            Err(e) => {
+                error!("Execution backend failure: {}", e);
+                false
             }
         }
     }
@@ -140,11 +170,7 @@ shell:
     fn test_wrapper() -> HermesWrapper {
         let policy = parse_policy(TEST_POLICY).unwrap();
         let pdp = Pdp::new(policy);
-        HermesWrapper {
-            pdp,
-            session_id: SessionId::new(),
-            agent_id: AgentId::new("hermes"),
-        }
+        HermesWrapper::with_pdp(pdp).expect("wrapper")
     }
 
     #[test]

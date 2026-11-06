@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 agentfence-core = { path = "../core" }
+agentfence-enforcement = { path = "../enforcement" }
 agentfence-policy = { path = "../policy" }
 agentfence-shell = { path = "../shell" }
 agentfence-approval = { path = "../approval" }

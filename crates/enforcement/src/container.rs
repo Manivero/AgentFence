@@ -263,6 +263,38 @@ pub struct ContainerResult {
     pub timed_out: bool,
 }
 
+/// Stop and remove a named container.
+///
+/// `kill` is retried a bounded number of times because a container that is
+/// still being created can reject the first attempt. A leak here is a resource
+/// leak, not a privilege escalation, so a bounded retry is the right trade-off.
+fn stop_container(enforcer: &ContainerEnforcer, name: &str) {
+    for attempt in 0..3 {
+        let stopped = enforcer
+            .runtime_command()
+            .args(["kill", name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if stopped {
+            break;
+        }
+        if attempt < 2 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let _ = enforcer
+        .runtime_command()
+        .args(["rm", "-f", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 /// Executes commands in an isolated container.
 #[derive(Debug)]
 pub struct ContainerEnforcer {
@@ -414,24 +446,13 @@ impl ContainerEnforcer {
             None
         };
         let name = container_name.clone();
-        let mut killer = self.runtime_command();
+        let enforcer = ContainerEnforcer::new(self.config.clone());
 
         let outcome = run_with_timeout(child, timeout, || {
             // The container is named, so it can be stopped even though the
             // client process has been abandoned.
             warn!(container = %name, "execution timed out; stopping container");
-            let _ = killer
-                .args(["kill", &name])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            let _ = killer
-                .args(["rm", "-f", &name])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            stop_container(&enforcer, &name);
         });
 
         match outcome {
@@ -446,12 +467,9 @@ impl ContainerEnforcer {
                 })
             }
             Err(ExecutionError::TimedOut(secs)) => {
-                let _ = killer
-                    .args(["rm", "-f", &name])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                // The on-timeout handler already attempted a stop; repeat the
+                // removal so a container that ignored `kill` is still cleaned up.
+                stop_container(&enforcer, &name);
                 Err(ContainerError::TimedOut(secs))
             }
             Err(ExecutionError::Io(m)) => Err(ContainerError::Io(m)),

@@ -636,6 +636,43 @@ separate operator authentication; this is a documented trust boundary.
 - Real container isolation was **not** verified: no container runtime was
   available in the verification environment.
 
+## Phase 12.1 - Real Container Runtime Verification
+
+### Runtime discovery
+
+No container runtime is available on the verification host:
+
+- `docker` CLI: absent (not on `PATH`, not in Program Files, no service).
+- `podman` CLI: absent.
+- WSL Ubuntu: present but stopped, and contains no container runtime.
+- `wsl`, `scoop`, `chocolatey`, and WinGet link directories contain none.
+
+Installing a runtime was out of scope, so **real isolation was not verified**.
+
+### Fixed during this phase
+
+- **Hermes wrapper host bypass.** `HermesWrapper::execute` spawned commands
+  directly with `std::process::Command`, so the container backend selected for
+  `agentguard exec` did not apply to Hermes. Both the allow and approved paths
+  now route through the selected `ExecutionBackend`, and the wrapper fails
+  closed when the selected backend is unusable.
+- **Container cleanup retry.** `kill` is retried up to three times before
+  `rm -f`, reducing the window in which a timed-out container is leaked.
+
+### Verification
+
+- 5 routing tests in `crates/hermes/tests/backend_routing.rs` (fake runtime).
+- 11 real-runtime tests in `crates/cli/tests/real_container_runtime.rs`; all 10
+  that require a runtime skip unless `AGENTFENCE_REAL_RUNTIME_TEST=1` is set.
+  None were executed.
+
+### Execution entry points audited
+
+`agentguard exec` and `HermesWrapper` route through the backend.
+`agentguard run` spawns the supervised agent. The MCP proxy spawns the
+configured MCP server. `os_enforcement`, `vm`, and `wsl` are not wired to any
+execution path. No remaining host-execution path was found.
+
 ## Self-Review Gate (Section 39)
 
 | Question | Answer |

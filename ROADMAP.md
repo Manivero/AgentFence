@@ -144,6 +144,14 @@ Replace the container execution placeholder with a real backend.
 - [x] Fake-runtime tests plus end-to-end enforcement tests.
 - [ ] Verified against a real container runtime (not yet performed).
 
+## Real Container Runtime Verification ⏳
+
+- [x] Runtime discovery performed; no Docker or Podman available.
+- [x] Hermes wrapper host bypass found and fixed.
+- [x] Opt-in real-runtime suite authored (skips without a runtime).
+- [x] Container kill retry added.
+- [ ] Real isolation verified against a live runtime (blocked: no runtime).
+
 ## Post-MVP v0.2 — In Progress
 
 ### Priority 1 — Security Correctness ✅

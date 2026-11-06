@@ -438,6 +438,65 @@ rejected during configuration validation.
   automated suite uses a **fake** runtime and proves invocation construction
   and fail-closed behaviour, not isolation.
 
+### Real-runtime verification status
+
+The container backend was verified against a **fake** runtime only. No Docker or
+Podman CLI or daemon was present in the verification environment, and installing
+one was out of scope.
+
+**Real container isolation has not been verified.** The automated suite proves
+invocation construction, fail-closed behaviour, and the enforcement invariants;
+it does not prove isolation, non-root execution, read-only filesystems,
+capability drops, resource limits, or network isolation as actually enforced by
+a runtime.
+
+An opt-in suite exists for a machine that does have a runtime:
+
+```bash
+AGENTFENCE_REAL_RUNTIME_TEST=1 cargo test -p agentfence-cli --test real_container_runtime -- --nocapture
+```
+
+It skips every test unless `AGENTFENCE_REAL_RUNTIME_TEST=1` is set, so it can
+never be mistaken for a passing verification. It checks effective UID, read-only
+root filesystem, `CapEff`/`NoNewPrivs` from `/proc/self/status`, `inspect`
+output for `ReadonlyRootfs` and `NetworkDisabled`, timeout kill, mount
+visibility, and output/exit-code propagation.
+
+### Execution entry points
+
+Every path from a policy decision to a running process goes through the
+selected `ExecutionBackend`:
+
+| Entry point | Behaviour |
+|---|---|
+| `agentguard exec` | Backend selected once; allow and approved paths both route through it |
+| `HermesWrapper` | Backend selected once; allow and approved paths both route through it |
+| `agentguard run` | Spawns the supervised agent process, not shell commands |
+| MCP proxy | Spawns the configured MCP server, not shell commands |
+| `os_enforcement`, `vm`, `wsl` | Not wired to any execution path |
+
+The Hermes wrapper previously spawned commands directly on the host, which
+meant selecting the container backend for `agentguard exec` left Hermes on the
+host. This was fixed and is covered by `crates/hermes/tests/backend_routing.rs`.
+
+### Known container limitations
+
+- **`/tmp` ownership.** `--tmpfs /tmp` is created by the runtime and may be
+  owned by root. A non-root container user may not be able to write to `/tmp`.
+  This is unverified without a real runtime and must be checked during
+  real-runtime validation.
+- **Check/use window.** The runtime is probed at backend creation and again at
+  each execution, but a runtime can still disappear between the probe and
+  `run`. A failure at that point is a fail-closed error, never a host
+  execution.
+- **Kill races.** `kill` is retried three times and `rm -f` follows. A runtime
+  that ignores both can leak a container; that is a resource leak, not a
+  privilege escalation.
+- **Concurrent invocations.** Container names are UUID-derived, so concurrent
+  executions cannot collide.
+- **Mount access.** Every declared mount is fully accessible to the container,
+  read-only or read-write exactly as configured. There is no partial mount.
+
 ## Known Limitations
 
 - Cooperative mode only — no OS-level enforcement

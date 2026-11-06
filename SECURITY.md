@@ -457,8 +457,8 @@ Scope of that claim:
   on any platform are unverified.
 - **What is trusted:** the engine's own isolation (runc, overlayfs, seccomp).
   AgentFence configures these; it does not implement them.
-- **Not stress-tested:** concurrent execution and adversarial mount or TOCTOU
-  attacks.
+- **Adversarially hardened in Phase 12.3** (see below); remaining
+  file-replacement TOCTOU and host-mount races are documented, not eliminated.
 
 The opt-in suites are the reproducible evidence:
 
@@ -466,6 +466,44 @@ The opt-in suites are the reproducible evidence:
 AGENTFENCE_REAL_RUNTIME_TEST=1 cargo test -p agentfence-cli --test real_container_runtime -- --test-threads=1
 AGENTFENCE_REAL_RUNTIME_TEST=1 cargo test -p agentfence-hermes --test real_container_backend -- --test-threads=1
 ```
+
+#### Phase 12.3 hardening
+
+Three classes of weakness were found and closed:
+
+- **Runtime resolution TOCTOU.** The runtime executable was resolved separately
+  for the `--version` probe, the container run, and cleanup, so a concurrent
+  process could change `PATH` or swap a file between them. The executable is now
+  resolved once, canonicalized, and cached; the same path is used for the probe,
+  the run, and cleanup.
+- **Mount validation by name only.** A symlink or Windows junction whose *name*
+  was innocent could point at the host runtime socket or another protected path.
+  Existing host paths are now canonicalized and checked against a blocklist using
+  component-wise comparison, so `/srv/data` can never match `/srv/data-evil`.
+- **Unstructured argument logging.** The log line joined arguments with spaces,
+  so a payload containing spaces or shell metacharacters could be misread as a
+  different command. Arguments are now logged as a JSON array, each element
+  redacted individually.
+
+Environment handling was tightened with a denylist of container-runtime control
+variables (`DOCKER_*`, `CONTAINERD_*`, `AGENTFENCE_*`) and an optional configured
+allowlist. The guest never inherits the host environment: Docker passes only the
+values given with `-e`, and an empty value is sent as `KEY=`, never as a bare
+`-e KEY` (which would inherit the host value).
+
+**Remaining, documented races:**
+
+- *File replacement after resolution.* A local attacker who can write to the
+  resolved runtime binary can replace it after the probe. Closing this would
+  require verifying the executable's identity at exec time, which
+  `std::process::Command` cannot do. The runtime binary is therefore trusted.
+- *Mount path replacement after validation.* A host path that does not exist at
+  validation time is left to the runtime (Docker creates missing bind sources),
+  so it could be created or replaced before the runtime resolves it. The Docker
+  API offers no way to bind a file descriptor, so this cannot be closed from the
+  client.
+- *Daemon trust.* The daemon and its socket are trusted. AgentFence does not
+  authenticate to the daemon or verify its identity.
 
 Both skip every test unless `AGENTFENCE_REAL_RUNTIME_TEST=1` is set, so neither
 can be mistaken for a passing verification on a machine without a runtime. With

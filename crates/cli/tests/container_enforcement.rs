@@ -98,6 +98,46 @@ fn make_fake_runtime(dir: &Path) -> PathBuf {
     }
 }
 
+/// A fake runtime whose cleanup commands always fail. The execution itself
+/// succeeds, so cleanup failure must not turn a successful run into a failure.
+fn make_failing_cleanup_runtime(dir: &Path) -> PathBuf {
+    std::fs::write(dir.join("exit_code"), "0").unwrap();
+
+    #[cfg(windows)]
+    {
+        let p = dir.join("docker.bat");
+        let mut script = String::new();
+        script.push_str("@echo off\r\n");
+        script.push_str("set DIR=%~dp0\r\n");
+        script.push_str("echo %* >> \"%DIR%runtime.log\"\r\n");
+        script.push_str("if \"%1\"==\"--version\" exit /b 0\r\n");
+        script.push_str("if \"%1\"==\"kill\" exit /b 1\r\n");
+        script.push_str("if \"%1\"==\"rm\" exit /b 1\r\n");
+        script.push_str("echo 'fake stdout'\r\n");
+        script.push_str("exit /b 0\r\n");
+        std::fs::write(&p, script).unwrap();
+        p
+    }
+
+    #[cfg(unix)]
+    {
+        let p = dir.join("docker");
+        let mut script = String::new();
+        script.push_str("#!/bin/sh\n");
+        script.push_str("DIR=\"$(dirname \"$0\")\"\n");
+        script.push_str("printf '%s\\n' \"$*\" >> \"$DIR/runtime.log\"\n");
+        script.push_str("if [ \"$1\" = \"--version\" ]; then exit 0; fi\n");
+        script.push_str("if [ \"$1\" = \"kill\" ]; then exit 1; fi\n");
+        script.push_str("if [ \"$1\" = \"rm\" ]; then exit 1; fi\n");
+        script.push_str("echo 'fake stdout'\n");
+        script.push_str("exit 0\n");
+        std::fs::write(&p, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+}
+
 fn write_policy(dir: &TempDir, shell: &str) -> PathBuf {
     let yaml = format!(
         "version: 1\ndefaults:\n  shell: {shell}\n  network: deny\n  mcp: deny\n  filesystem: deny\n"
@@ -420,4 +460,103 @@ fn a_quoted_payload_reaches_the_runtime_as_one_argument() {
         argc, 30,
         "the -c payload must be a single argument; it was split: {log}"
     );
+}
+
+#[test]
+fn concurrent_executions_get_distinct_container_names() {
+    // Each thread gets its own fake runtime and log: a single shared log loses
+    // concurrent appends on Windows, which would make the test flaky rather than
+    // wrong.
+    let dir = TempDir::new("concurrent");
+    let policy = write_allow_policy(&dir);
+
+    let mut handles = Vec::new();
+    for i in 0..4 {
+        let policy = policy.clone();
+        let base = dir.path.clone();
+        handles.push(std::thread::spawn(move || {
+            let runtime_dir = base.join(format!("runtime-{i}"));
+            std::fs::create_dir_all(&runtime_dir).unwrap();
+            let runtime = make_fake_runtime(&runtime_dir);
+            let data = base.join(format!("data-{i}"));
+            let out = run_agentfence(
+                &[
+                    "exec",
+                    "--policy",
+                    &policy.to_string_lossy(),
+                    "--",
+                    "sh",
+                    "-c",
+                    "echo ok",
+                ],
+                &data,
+                &runtime,
+            );
+            (
+                i,
+                out.status.success(),
+                stdout_plus_stderr(&out),
+                runtime_dir,
+            )
+        }));
+    }
+
+    let mut all_names: Vec<String> = Vec::new();
+    for (i, ok, combined, runtime_dir) in handles
+        .into_iter()
+        .map(|h| h.join().expect("thread panicked"))
+    {
+        assert!(ok, "thread {i} failed: {combined}");
+        let log = std::fs::read_to_string(runtime_dir.join("runtime.log")).unwrap_or_default();
+        let runs: Vec<&str> = log.lines().filter(|l| l.starts_with("run ")).collect();
+        assert_eq!(
+            runs.len(),
+            1,
+            "thread {i} must invoke the runtime exactly once: {runs:?}"
+        );
+        for name in runs
+            .iter()
+            .filter_map(|l| l.split("--name ").nth(1))
+            .map(|rest| rest.split_whitespace().next().unwrap_or(""))
+        {
+            all_names.push(name.to_string());
+        }
+    }
+
+    assert_eq!(all_names.len(), 4, "missing names: {all_names:?}");
+    let unique: std::collections::HashSet<&str> = all_names.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        unique.len(),
+        4,
+        "container names must be unique: {all_names:?}"
+    );
+}
+
+#[test]
+fn cleanup_failure_does_not_turn_a_successful_run_into_a_failure() {
+    let dir = TempDir::new("cleanup-fail");
+    let runtime = make_failing_cleanup_runtime(&dir.path);
+    let policy = write_allow_policy(&dir);
+
+    let out = run_agentfence(
+        &[
+            "exec",
+            "--policy",
+            &policy.to_string_lossy(),
+            "--",
+            "sh",
+            "-c",
+            "echo survived",
+        ],
+        &dir.data_dir(),
+        &runtime,
+    );
+
+    assert!(
+        out.status.success(),
+        "cleanup failure must not fail the run: {}",
+        stdout_plus_stderr(&out)
+    );
+    let combined = stdout_plus_stderr(&out);
+    assert!(combined.contains("survived"), "{combined}");
 }

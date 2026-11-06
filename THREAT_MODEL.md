@@ -157,7 +157,11 @@ reports it and restricts only directories it creates.
 | Asset | Threat | Mitigation | Residual risk |
 |---|---|---|---|
 | Host kernel | Container escape through a kernel vulnerability | Non-root user, `--cap-drop ALL`, `no-new-privileges`, read-only root FS, resource limits, no network | Kernel exploits are not mitigated by container isolation |
-| Host container runtime | Mounting the host runtime socket to gain runtime control | Socket mounts rejected during configuration validation | A runtime bug is not mitigated |
+| Host container runtime | Mounting the host runtime socket to gain runtime control | Socket mounts rejected during configuration validation, by name **and** by canonicalized target (symlinks/junctions included) | A runtime bug is not mitigated |
+| Host container runtime | Replacing the runtime executable between the `--version` probe and the run (TOCTOU) | Executable resolved once, canonicalized, and cached; the same path is used for probe, run, and cleanup | File replacement *after* resolution is still possible; the runtime binary is trusted |
+| Host filesystem | Bind-mounting a path that is a symlink or junction to a protected directory | Existing host paths are canonicalized and checked component-wise against a blocklist | A path that does not exist at validation time can still be created or replaced before the runtime resolves it |
+| Host environment | Leaking host variables into the guest, or steering the guest's runtime client | Docker receives only `-e KEY=VALUE`; an empty value is `KEY=`, never a bare `KEY`; `DOCKER_*`, `CONTAINERD_*` and `AGENTFENCE_*` are rejected; an optional allowlist is enforced | Variables set by the operator in the config remain fully visible to the guest |
+| Other invocations | One execution's timeout cleanup killing another's container | Every container gets a UUID name; cleanup addresses only that name | A daemon-level name collision is not defended against (UUIDv4 makes it negligible) |
 | Host filesystem | Reading or modifying host files | Only explicit, validated mounts; default is none | Every declared mount is fully accessible to the container |
 | Host network | Exfiltration or lateral movement | `--network none` by default | Any enabled network path is fully accessible |
 | Host resources | CPU, memory, or PID exhaustion | `--cpus`, `--memory`, `--memory-swap`, `--pids-limit`, timeout with container kill | Limits are runtime-enforced, not guaranteed against a runtime bug |
@@ -166,9 +170,13 @@ reports it and restricts only directories it creates.
 Docker Engine (Docker Desktop 4.98.0, Engine 29.9.2, WSL2) on Windows 11:
 non-root UID, read-only root filesystem, `CapEff=0`, `NoNewPrivs=1`, the declared
 resource limits, `NetworkMode=none`, `/tmp` tmpfs, and timeout kill were all read
-back from `docker inspect` or from inside the container. Linux Docker, Podman,
-Windows Containers mode, and concurrent/adversarial execution remain unverified.
-The residual risks above are control limitations that no configuration removes.
+back from `docker inspect` or from inside the container. Phase 12.3 additionally
+verified, on that engine: mount-traversal and runtime-socket rejection before
+any container is created, symlink-based protection bypass rejection, host
+environment isolation, isolated parallel executions, and that cleanup leaves no
+container behind. Linux Docker, Podman, and Windows Containers mode remain
+unverified. The residual risks above are control limitations that no
+configuration removes.
 
 ## Threats AgentFence Can Mitigate
 

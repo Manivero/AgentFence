@@ -25,7 +25,9 @@ use std::time::{Duration, Instant};
 use agentfence_enforcement::backend::{
     select_backend, ContainerBackend, ExecutionMode, ExecutionRequest,
 };
-use agentfence_enforcement::container::{ContainerConfig, ContainerEnforcer, ContainerRuntime};
+use agentfence_enforcement::container::{
+    ContainerConfig, ContainerEnforcer, ContainerError, ContainerRuntime, Mount,
+};
 
 fn opt_in() -> bool {
     std::env::var("AGENTFENCE_REAL_RUNTIME_TEST")
@@ -88,6 +90,42 @@ fn config() -> ContainerConfig {
 
 fn skip(reason: &str) {
     eprintln!("SKIPPED: {reason}");
+}
+
+static FRESH_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A unique, empty host directory safe to mount.
+fn fresh_host_dir(label: &str) -> PathBuf {
+    let n = FRESH_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("af-real-{label}-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create host dir");
+    dir
+}
+
+/// Every container AgentFence currently knows about.
+fn agentfence_containers(rt: &str) -> Vec<String> {
+    Command::new(rt)
+        .args(["ps", "-a", "--format", "{{.Names}}"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| l.starts_with("agentfence-"))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn opt_in_or_skip() -> Option<(String, ContainerConfig)> {
+    if !opt_in() {
+        skip("set AGENTFENCE_REAL_RUNTIME_TEST=1 to run real-runtime tests");
+        return None;
+    }
+    let rt = runtime_binary();
+    assert!(daemon_available(&rt), "{rt} daemon is not reachable");
+    ensure_image(&rt, "alpine:3.19");
+    Some((rt, config()))
 }
 
 #[test]
@@ -761,4 +799,223 @@ fn real_runtime_missing_runtime_fails_closed_without_host_execution() {
         "no host fallback: the command must not run on the host"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn real_runtime_rejects_mount_traversal_before_creating_anything() {
+    let Some((_rt, mut cfg)) = opt_in_or_skip() else {
+        return;
+    };
+    cfg.mounts.push(Mount {
+        host_path: "/srv/agentfence-probe".to_string(),
+        container_path: "/data/../escape".to_string(),
+        read_only: true,
+    });
+    let enforcer = ContainerEnforcer::new(cfg);
+    let err = enforcer
+        .execute("/bin/sh", &["-c".into(), "true".into()])
+        .expect_err("traversal must be rejected");
+    assert!(
+        matches!(err, ContainerError::InvalidConfiguration(_)),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[test]
+fn real_runtime_rejects_the_docker_socket_mount() {
+    let Some((_rt, mut cfg)) = opt_in_or_skip() else {
+        return;
+    };
+    cfg.mounts.push(Mount {
+        host_path: "/var/run/docker.sock".to_string(),
+        container_path: "/var/run/docker.sock".to_string(),
+        read_only: true,
+    });
+    let enforcer = ContainerEnforcer::new(cfg);
+    let err = enforcer
+        .execute("/bin/sh", &["-c".into(), "true".into()])
+        .expect_err("the socket mount must be rejected");
+    assert!(
+        matches!(err, ContainerError::InvalidConfiguration(_)),
+        "unexpected error: {err:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn real_runtime_rejects_a_symlink_to_a_protected_host_path() {
+    let Some((_rt, mut cfg)) = opt_in_or_skip() else {
+        return;
+    };
+    let dir = fresh_host_dir("symlink");
+    let link = dir.join("innocent");
+    std::os::unix::fs::symlink("/proc", &link).expect("symlink");
+    cfg.mounts.push(Mount {
+        host_path: link.to_string_lossy().into_owned(),
+        container_path: "/proc-link".to_string(),
+        read_only: true,
+    });
+    let enforcer = ContainerEnforcer::new(cfg);
+    let err = enforcer
+        .execute("/bin/sh", &["-c".into(), "true".into()])
+        .expect_err("a symlink to /proc must be rejected");
+    assert!(
+        matches!(err, ContainerError::InvalidConfiguration(_)),
+        "unexpected error: {err:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn real_runtime_does_not_inherit_the_host_environment() {
+    let Some((_rt, mut cfg)) = opt_in_or_skip() else {
+        return;
+    };
+    // A host-only variable that must never appear inside the container.
+    let host_only = "AGENTFENCE_REAL_HOST_ONLY";
+    std::env::set_var(host_only, "host-value");
+    cfg.env_vars.push((
+        "AGENTFENCE_REAL_GUEST".to_string(),
+        "guest-value".to_string(),
+    ));
+
+    let enforcer = ContainerEnforcer::new(cfg);
+    let out = enforcer
+        .execute(
+            "/bin/sh",
+            &[
+                "-c".into(),
+                "printf 'host=%s guest=%s' \"${AGENTFENCE_REAL_HOST_ONLY:-UNSET}\" \"${AGENTFENCE_REAL_GUEST:-UNSET}\"".into(),
+            ],
+        )
+        .expect("real execution");
+    std::env::remove_var(host_only);
+
+    assert!(
+        out.stdout.contains("host=UNSET"),
+        "the guest must not see the host environment: {:?}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("guest=guest-value"),
+        "the configured value must reach the guest: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn real_runtime_parallel_executions_are_isolated() {
+    let Some((_rt, _cfg)) = opt_in_or_skip() else {
+        return;
+    };
+    let mut handles = Vec::new();
+    for i in 0..3 {
+        handles.push(std::thread::spawn(move || {
+            let dir = fresh_host_dir(&format!("parallel-{i}"));
+            let mut cfg = config();
+            cfg.mounts.push(Mount {
+                host_path: dir.to_string_lossy().into_owned(),
+                container_path: "/data".to_string(),
+                read_only: false,
+            });
+            let enforcer = ContainerEnforcer::new(cfg);
+            let out = enforcer
+                .execute(
+                    "/bin/sh",
+                    &[
+                        "-c".into(),
+                        format!("echo marker-{i} > /data/marker; cat /data/marker; ls /data | tr '\\n' ' '"),
+                    ],
+                )
+                .expect("parallel execution");
+            (i, dir, out)
+        }));
+    }
+
+    for (i, dir, out) in handles
+        .into_iter()
+        .map(|h| h.join().expect("thread panicked"))
+    {
+        assert!(
+            out.stdout.contains(&format!("marker-{i}")),
+            "thread {i} must see its own marker: {:?}",
+            out.stdout
+        );
+        // `ls` reports the file *name*, which is `marker`; its content is
+        // `marker-{i}`. Seeing exactly one entry proves the mount is private.
+        let entries: Vec<&str> = out
+            .stdout
+            .lines()
+            .last()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+        assert_eq!(
+            entries,
+            vec!["marker"],
+            "thread {i} must see exactly its own single file: {entries:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn real_runtime_cleanup_leaves_no_container_behind() {
+    let Some((rt, _cfg)) = opt_in_or_skip() else {
+        return;
+    };
+    let before = agentfence_containers(&rt);
+    for _ in 0..2 {
+        let enforcer = ContainerEnforcer::new(config());
+        enforcer
+            .execute("/bin/sh", &["-c".into(), "true".into()])
+            .expect("real execution");
+    }
+    let after = agentfence_containers(&rt);
+    let leaked: Vec<_> = after.iter().filter(|c| !before.contains(c)).collect();
+    assert!(
+        leaked.is_empty(),
+        "executions leaked containers: {leaked:?}"
+    );
+}
+
+#[test]
+fn real_runtime_the_resolved_runtime_is_used_for_probe_and_run() {
+    let Some((rt, _cfg)) = opt_in_or_skip() else {
+        return;
+    };
+    // An explicit runtime path must be honoured, not re-searched in PATH.
+    let cfg = ContainerConfig {
+        runtime_path: Some(rt.clone()),
+        ..config()
+    };
+    let enforcer = ContainerEnforcer::new(cfg);
+    assert!(
+        enforcer.check_runtime().is_ok(),
+        "the explicit runtime must be usable"
+    );
+    let out = enforcer
+        .execute("/bin/sh", &["-c".into(), "echo reached".into()])
+        .expect("real execution");
+    assert!(out.stdout.contains("reached"), "{:?}", out.stdout);
+}
+
+#[test]
+fn real_runtime_missing_runtime_never_falls_back_to_the_host() {
+    let Some((_rt, _cfg)) = opt_in_or_skip() else {
+        return;
+    };
+    // A runtime path that does not exist must fail closed.
+    let cfg = ContainerConfig {
+        runtime_path: Some("/nonexistent/agentfence-no-such-runtime".to_string()),
+        ..config()
+    };
+    let enforcer = ContainerEnforcer::new(cfg);
+    let err = enforcer
+        .execute("/bin/sh", &["-c".into(), "echo must-not-run".into()])
+        .expect_err("a missing runtime must fail closed");
+    assert!(
+        matches!(err, ContainerError::RuntimeUnavailable { .. }),
+        "unexpected error: {err:?}"
+    );
 }

@@ -156,8 +156,12 @@ Replace the container execution placeholder with a real backend.
       3 Hermes tests passing).
 - [x] Quoted-argument loss fixed (`ShellCommand::from_argv`).
 - [x] Silent container-config fallback fixed (now fails closed).
+- [x] Adversarially hardened (Phase 12.3): runtime resolution TOCTOU closed,
+      mount validation canonicalized and blocklisted, arguments logged as a
+      redacted JSON array, environment denylist and allowlist added.
+- [x] Concurrent execution verified on a real engine (isolated parallel runs,
+      distinct container names, no cross-container cleanup, no orphans).
 - [ ] Verified on Linux Docker and Podman (not performed).
-- [ ] Concurrent execution stress test (not performed).
 
 ## Post-MVP v0.2 — In Progress
 

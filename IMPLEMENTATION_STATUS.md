@@ -756,9 +756,77 @@ suite, which reports a missing runtime as an error.
 - `Hyper-V` and `HypervisorPlatform` are disabled on this host; the WSL2
   backend was used. Windows Containers mode is unverified.
 - Concurrent execution was not stress-tested; container names are UUIDs, so
-  collisions are not expected, but no load test was run.
+  collisions are not expected, but no load test was run. *(Addressed in Phase
+  12.3 — see below.)*
 - Host-mount validation, TOCTOU between runtime discovery and execution, and
   env/credential propagation were reviewed but not adversarially tested.
+  *(Addressed in Phase 12.3 — see below.)*
+
+## Phase 12.3 - Container Security Hardening
+
+Adversarial hardening of the Container Execution Backend: runtime TOCTOU, host
+mount validation, environment propagation, concurrency, and argument logging.
+Committed locally, not pushed.
+
+### Defects found and fixed
+
+- **Runtime executable TOCTOU.** `runtime_command()` resolved the executable on
+  every call — once for the `--version` probe, once for the container run, and
+  twice more for cleanup. With `runtime_path` unset, `Command::new("docker")`
+  searched `PATH` each time, so a concurrent process could change `PATH` or swap
+  a file on it and the binary that was validated would not be the binary that
+  executed. The executable is now resolved once, canonicalized (symlinks and
+  junctions included), and cached in a `OnceLock`; probe, run, and cleanup all
+  use that same path. Windows extended-length (`\\?\`) prefixes are stripped so
+  child programs receive a normal path.
+- **Mount validation by name only.** The socket check was a substring test on the
+  literal path, and no canonicalization was performed. A symlink or Windows
+  junction named innocently could point at the host runtime socket or another
+  protected path and pass validation. Existing host paths are now canonicalized
+  and compared component-wise against a blocklist of runtime sockets,
+  container-runtime data directories, and host kernel pseudo-filesystems.
+  Component-wise comparison means `/srv/data` can never match `/srv/data-evil`.
+- **Unstructured argument logging.** The container log line joined arguments with
+  spaces, so `sh -c "echo a > b"` was rendered as `sh -c echo a > b` — an
+  operator reading the log could act on a different command than the one that
+  ran. Arguments are now logged as a JSON array with each element redacted
+  individually. Display logging remains separate from the authoritative action
+  digest in the audit record.
+
+### Controls added
+
+- **Environment denylist.** `DOCKER_*`, `CONTAINERD_*`, and `AGENTFENCE_*`
+  variables are rejected at configuration validation. These locate or
+  authenticate against a container runtime; injecting them into a guest would
+  hand it a socket path or steer AgentFence from inside a container.
+- **Optional environment allowlist.** `env_allowlist` restricts which variable
+  names a configuration may inject, bounding what a misconfigured or tampered
+  config can do.
+- **Empty-value correctness.** Values are always sent as `-e KEY=VALUE`; an empty
+  value becomes `KEY=`, never a bare `-e KEY` (which would make Docker inherit
+  the host value). NUL bytes in names and values are rejected.
+
+### Verification
+
+- `cargo test --workspace --locked`: **616 passed / 0 failed**.
+- Real runtime, `AGENTFENCE_REAL_RUNTIME_TEST=1`: CLI suite **23 passed / 0
+  failed / 1 skipped**; Hermes suite **4 passed / 0 failed / 0 skipped**.
+  The one skip is the fail-closed-without-daemon path, which is unobservable
+  while a daemon is reachable.
+- Docker Engine 29.9.2 re-confirmed available before the runs.
+
+### Remaining limitations
+
+- *File replacement after resolution* is not mitigated: a local attacker who can
+  write to the resolved runtime binary can swap it after the probe. The runtime
+  binary is trusted.
+- *Mount path replacement after validation* is not mitigated: a host path that
+  does not exist at validation time is left to the runtime (Docker creates
+  missing bind sources), so it can be created or replaced before the runtime
+  resolves it. The Docker API cannot bind a file descriptor.
+- *Daemon trust:* AgentFence neither authenticates to the daemon nor verifies its
+  identity.
+- Platform scope unchanged: Windows 11 + WSL2 + Docker Desktop only.
 
 ## Self-Review Gate (Section 39)
 
